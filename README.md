@@ -6,7 +6,7 @@ A diferencia de los CRMs tradicionales, que se limitan a almacenar información,
 
 El objetivo final es reducir el trabajo administrativo asociado a las ventas inmobiliarias y permitir que los agentes dediquen más tiempo a construir relaciones, negociar y cerrar tratos.
 
-Este repositorio contiene el **backend** del proyecto (la API y la lógica de servidor). El frontend vive en un repositorio/carpeta separado.
+Este repositorio contiene el **backend** del proyecto (la API y la lógica de servidor). El frontend vive en un repositorio/carpeta separado ([stateai-frontend](https://github.com/h8hyf2rw9y-afk/StateAI---Frontend)).
 
 ## Objetivos del proyecto
 
@@ -18,39 +18,219 @@ Este repositorio contiene el **backend** del proyecto (la API y la lógica de se
 6. **Construir un CRM AI-first** — ir más allá del modelo tradicional de CRM hacia un sistema donde la IA participa activamente en la gestión del pipeline de ventas.
 7. **Crear una plataforma escalable** — sentar las bases de un producto SaaS que eventualmente soporte agentes individuales, equipos inmobiliarios y agencias.
 
-## Estado del proyecto
+## Status
 
-🚧 Este backend está en fase inicial — el repositorio aún no contiene código. Este README sirve como punto de partida y se irá completando a medida que se defina la arquitectura.
+🚧 **Phase 1: foundational data model**, implemented and tested (25 passing tests) against a local SQLite substitute — not yet applied to the real Supabase Postgres database (needs a `DATABASE_URL` — see [Setup](#setup)). No FastAPI-side business workflows beyond basic CRUD + deterministic matching exist yet: no transactions, commissions, documents, appointments, AI agents, or advanced automation. See [What's next](#whats-next).
 
-## Autenticación (Supabase) — a tener en cuenta para este backend
+## Core architectural principle
 
-El frontend (`stateai-frontend`) ya implementa autenticación real con **Supabase Auth** (email/contraseña + Google OAuth vía `@supabase/ssr`), sin este backend de por medio — Supabase actúa como proveedor de identidad directamente. Esto tiene implicaciones importantes para cuando se construya FastAPI:
+The schema is **not** built around a generic "Lead" entity. A **Contact** is the central person/entity; leads, buyer requirements, property interests, and (eventually) opportunities/transactions are relationships and processes involving a Contact over time. A person can hold multiple roles (buyer, seller, investor...) and have several buyer requirements across their relationship with the agency — the same Contact never needs to be recreated.
 
-- **El backend deberá verificar el JWT de Supabase en cada request.** El frontend protege sus rutas con un Proxy/Middleware de Next.js, pero esa es solo una comprobación optimista del lado del cliente — no es un límite de seguridad real. Este backend **no debe confiar** en que una request ya viene autenticada solo porque el frontend la dejó pasar; debe validar el JWT (firma, expiración, `aud`/`iss`) de forma independiente en cada endpoint protegido.
-- **Variables de entorno que este backend necesitará** (no confundir con las del frontend):
-  - `SUPABASE_URL` — la misma URL del proyecto que usa el frontend.
-  - `SUPABASE_SERVICE_ROLE_KEY` — clave secreta con acceso administrativo total, **solo para este backend**. Nunca debe existir en el frontend ni en ningún código que corra en el navegador.
-  - Posiblemente `SUPABASE_JWT_SECRET` (o las claves públicas JWKS del proyecto) para verificar tokens sin llamar a la API de Supabase en cada request.
-- **Ya existen usuarios reales en `auth.users`** con metadata poblada por el frontend:
-  - Registro por email: `user_metadata.first_name`, `user_metadata.last_name`.
-  - Google OAuth: `user_metadata.full_name` (o `name`), `user_metadata.avatar_url` (o `picture`).
-  - Esto es útil como referencia al diseñar una futura tabla pública `profiles`/`users` (con Row Level Security) que este backend gestione — actualmente **no existe ninguna tabla de aplicación**, solo la tabla interna `auth.users` que administra Supabase.
-- **El frontend ya modela el dominio `Organization → Team → User`** en `types/user.ts` (sin implementación real, solo tipos), anticipando el multi-tenancy que este backend deberá construir sobre Supabase Auth (por ejemplo, una tabla `organizations`/`teams`/`profiles` con `auth.users.id` como referencia).
-- **Nunca** expongas `SUPABASE_SERVICE_ROLE_KEY` en logs, respuestas de la API, ni en ningún artefacto que llegue al frontend.
+Two fundamentally different ways a Contact enters the CRM, both modeled explicitly:
 
-Más detalle de la implementación (para consulta, no para duplicar aquí) está documentado en el README del frontend, sección "How authentication works" / "Supabase configuration".
+- **Case A — arrives through a property**: `Contact → PropertyInterest → Property` (e.g. someone messages about a specific Facebook/Inmuebles24 listing).
+- **Case B — arrives looking for a property**: `Contact → BuyerRequirement → (locations, features) → matching Properties` (e.g. "I want a house in San Pedro, $4-5M, 3+ bedrooms").
 
-## Stack tecnológico
+The same Contact can have both over time (loses interest in one property, but still wants to buy — a **new** `BuyerRequirement` is added to the **existing** Contact, never a new Contact).
 
-- **Framework de API**: FastAPI (planeado — _aún no implementado_, ver regla "Do NOT build FastAPI yet" en las instrucciones del proyecto).
-- **Autenticación**: Supabase Auth (ya en uso desde el frontend; este backend deberá verificar sus JWTs — ver sección anterior).
-- **Base de datos**: Supabase PostgreSQL (planeado — _aún no hay tablas de aplicación_).
-- El resto del stack (ORM, migraciones, etc.) _aún no definido_.
+## Tech stack
 
-## Estructura del proyecto
+- **Python 3.12**, **FastAPI**, **Pydantic v2**
+- **SQLAlchemy 2.0** (sync, `Mapped`/`mapped_column` style) + **Alembic** for migrations
+- **PostgreSQL via Supabase** (`psycopg` v3 driver)
+- **Supabase Auth** for authentication — verified via JWKS (asymmetric signing keys), not recreated. See [Authentication](#authentication).
+- **uv** for dependency management (`pyproject.toml` + `uv.lock`)
+- **pytest** + FastAPI's `TestClient` for tests
 
-_TODO: se documentará una vez definida la arquitectura (por ejemplo, capas de API, dominio, agentes de IA, persistencia, etc.)._
+## Project structure
 
-## Cómo empezar
+```
+app/
+  main.py                  # FastAPI() instance, CORS, router registration
+  core/
+    config.py                 # pydantic-settings: DATABASE_URL, SUPABASE_URL, SUPABASE_JWT_AUD, FRONTEND_ORIGINS
+    database.py                  # SQLAlchemy engine, SessionLocal, get_db() dependency
+    security.py                     # JWT verification (get_current_claims) + org resolution (get_current_org_user)
+    seed_data.py                       # initial rows for the roles/features catalog tables — single source
+                                          # of truth for both the Alembic migration and the test fixtures
+  models/                   # SQLAlchemy ORM models — one module per entity group (see Data model below)
+    base.py                     # declarative Base, UUIDPKMixin, TimestampMixin/CreatedAtMixin
+    external.py                    # a stub for Supabase's auth.users table (see Data model)
+  schemas/                  # Pydantic Create/Update/Read models, one module per entity, plus:
+    enums.py                    # every "soft enum" (see Data model) — single source of truth
+    common.py                      # ORMModel base (from_attributes=True)
+    matching.py                       # response shape for the /matches endpoint
+  repositories/             # thin SQLAlchemy query classes, always organization_id-scoped (see base.py)
+  services/                 # business logic on top of repositories (contact/property/buyer-requirement/
+                               # property-interest CRUD + matching_service.py for Use Case 5)
+  api/
+    routes/                    # one module per resource (health, me, contacts, properties,
+                                  # buyer_requirements, property_interests)
+    router.py                     # aggregates routers under /api/v1 (health/  is mounted unversioned)
+alembic/
+  env.py                    # reads DATABASE_URL from app.core.config; excludes the `auth` schema from
+                               # autogenerate (see Data model)
+  versions/                 # one initial migration — every table below, plus roles/features seed data
+tests/
+  conftest.py               # in-memory SQLite (FK enforcement on) + a fake authenticated user, via
+                               # FastAPI dependency_overrides — no live Supabase project needed to test
+  test_security.py             # real JWT verification logic against a self-signed keypair
+  test_schemas.py                 # soft-enum + min/max range validation
+  test_contacts_api.py               # representative CRUD integration test (the pattern every entity follows)
+  test_matching_api.py                  # Use Cases 1-5 end to end, including the matching hard filters
+pyproject.toml / uv.lock
+alembic.ini
+.env.example
+```
 
-_TODO: instrucciones de instalación y ejecución una vez que exista código base._
+## Data model
+
+Every business table (except the two catalogs and the join tables) carries `organization_id` — this is deliberately *not* a complex multi-tenancy system yet, but the schema is prepared for one: everything is already scoped so real tenant isolation (or Postgres Row Level Security, later) doesn't require a schema rewrite.
+
+**Design principle used throughout: "soft enums".** Every classification field (`property_type`, `status`, `source`, `timeline`, …) is a plain `VARCHAR` column in the database, validated only at the API boundary via Pydantic `Literal` types (`app/schemas/enums.py`). Native Postgres `ENUM` types are deliberately avoided — they're painful to extend (`ALTER TYPE`); adding a new value here is a one-line Python change, never a migration. Multi-valued taxonomies (roles, features) get real lookup + junction tables instead, since those need referential structure anyway.
+
+| Table | Purpose |
+|---|---|
+| `organizations` | Tenant root. |
+| `users` | Bridges Supabase `auth.users` to an `organization_id` + `role` (`owner`/`admin`/`agent`, matching the frontend's `UserRole`). `id` is the **same UUID** as the Supabase auth user — see below. |
+| `contacts` | The central entity — a real person. `CHECK` requires at least an email or phone. |
+| `roles` + `contact_roles` | Catalog + many-to-many: a Contact can be buyer + investor at once. |
+| `properties` | Listings. `currency` defaults to `MXN` (Monterrey-area examples throughout: San Pedro, Valle Oriente, Chipinque). |
+| `features` + `property_features` | Catalog + junction: what a property actually has (pool, garden, …). |
+| `buyer_requirements` | Case B — "looking for" criteria for a Contact. Every `*_min`/`*_max` pair has a `CHECK` constraint (`min <= max`, re-validated at the API layer too for a clean 422 instead of a raw DB error). |
+| `buyer_requirement_locations` | A requirement can list several acceptable areas, ranked by `priority` — never a single free-text field. |
+| `buyer_requirement_features` | Catalog junction with a `classification`: `must_have` / `preferred` / `deal_breaker`. |
+| `property_interests` | Case A — a Contact's interest in one specific Property. Not unique on `(contact_id, property_id)`: a contact can lose and regain interest over time, and that history is kept. |
+
+**The `auth.users` reference**: `app/models/external.py` defines a minimal `Table` stand-in for Supabase's own `auth.users` — not a real model, just enough for SQLAlchemy to resolve `users.id`'s foreign key against it (SQLAlchemy requires the referenced table to exist somewhere in its metadata graph, even for an external, unmanaged table). `alembic/env.py`'s `include_object` filter explicitly excludes anything in the `auth` schema from autogenerate, so migrations never try to create/alter/drop Supabase's own table.
+
+**Catalog seeding**: `contact_roles`, `property_features`, and `buyer_requirement_features` all foreign-key into `roles`/`features`, so those two catalogs are seeded with their initial rows (`app/core/seed_data.py`) as part of the initial migration itself — nothing can reference a role/feature that doesn't exist yet.
+
+## Authentication
+
+Supabase Auth is the identity provider — **not recreated here**. This backend independently verifies every request's Supabase-issued JWT; it does not trust the frontend's own route protection (`proxy.ts` there is explicitly documented as an optimistic, client-side-only check).
+
+- **Verification** (`app/core/security.py`): `PyJWKClient` fetches Supabase's public signing keys from `https://<project-ref>.supabase.co/auth/v1/.well-known/jwks.json` (asymmetric keys — Supabase's current recommendation over the legacy shared-secret/HS256 approach) and verifies `iss`, `aud` (`"authenticated"`), `exp`, and the signature. No `service_role` key is needed anywhere — JWKS is public.
+- **Org resolution**: the verified token's `sub` (the Supabase user id) is looked up in this app's own `users` table to get `organization_id` and `role`. Every repository method takes `organization_id` and filters by it — tenant isolation is enforced on every query, not left to callers to remember.
+- **Not yet provisioned**: a real, valid Supabase session with no matching `users` row returns `403` (not `401` — the caller *is* who they say they are, they just can't use the CRM yet). There's no self-service "join an organization" flow yet; assign a `users` row manually for now (see [Local testing against a real session](#local-testing-against-a-real-session)).
+- **`GET /api/v1/me`** is the simplest possible proof this all works end to end — it returns the resolved `id`, `email`, `organization_id`, `role`, and OAuth `provider` for whoever's Bearer token you send it.
+
+⚠️ Supabase's JWT signing keys page (**Settings → Authentication → JWT Signing Keys**) needs to be on **asymmetric keys** for this to work — if your project still shows only a legacy "JWT secret" field, click **"Migrate JWT secret"** once (safe: both keys stay trusted during the transition).
+
+## Setup
+
+```bash
+# 1. Install uv if you don't have it
+pip install uv
+
+# 2. Install dependencies
+uv sync
+
+# 3. Configure environment
+cp .env.example .env
+# then fill in DATABASE_URL (Supabase dashboard -> Project Settings -> Database
+# -> Connection string) and SUPABASE_URL (same value the frontend uses).
+
+# 4. Apply migrations to your real Supabase Postgres
+uv run alembic upgrade head
+
+# 5. Run the server
+uv run fastapi dev app/main.py
+# -> http://localhost:8000, interactive docs at /docs
+```
+
+Other commands:
+
+```bash
+uv run pytest -v                 # full test suite (no live Supabase project needed)
+uv run alembic downgrade base    # roll back every migration (reversibility check)
+uv run alembic revision --autogenerate -m "..."   # generate a new migration after a model change
+```
+
+### Local testing against a real session
+
+To call a protected endpoint with a real signed-in session:
+
+1. Sign in via the running frontend, then copy the Supabase access token from the browser (Application → Cookies, or temporarily log `(await supabase.auth.getSession()).data.session.access_token` client-side).
+2. `curl http://localhost:8000/api/v1/me -H "Authorization: Bearer <token>"` — expect `403` the first time (no `users` row yet).
+3. Insert a `users` row for that Supabase user id manually (`INSERT INTO users (id, organization_id, role) VALUES ('<sub-from-the-403-or-jwt>', '<some-organization-id>', 'owner')`, creating an `organizations` row first if needed) — there's no API for this yet, by design (see [What's next](#whats-next)).
+4. Repeat step 2 — now `200`, with your real name/email/provider.
+
+## API
+
+All endpoints below live under `/api/v1` and require `Authorization: Bearer <supabase-access-token>`, except `GET /health` (unauthenticated, outside `/api/v1`, for uptime checks).
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/me` | Whoami — see [Authentication](#authentication). |
+| GET, POST | `/contacts` | List (paginated) / create. |
+| GET, PATCH, DELETE | `/contacts/{id}` | |
+| POST, DELETE | `/contacts/{id}/roles[/{role_key}]` | Assign / remove a role. |
+| GET, POST | `/contacts/{id}/buyer-requirements` | List / create *for that contact* (Case B). |
+| GET, POST | `/contacts/{id}/property-interests` | List / create *for that contact* (Case A). |
+| GET, POST | `/properties` | |
+| GET, PATCH, DELETE | `/properties/{id}` | |
+| POST, DELETE | `/properties/{id}/features[/{feature_key}]` | What a property actually has. |
+| GET | `/buyer-requirements` | |
+| GET, PATCH, DELETE | `/buyer-requirements/{id}` | |
+| POST | `/buyer-requirements/{id}/locations` | Add a preferred area. |
+| POST | `/buyer-requirements/{id}/features` | Tag a must-have/preferred/deal-breaker feature. |
+| **GET** | **`/buyer-requirements/{id}/matches`** | **Use Case 5** — deterministic candidate properties (see below). |
+| GET, PATCH, DELETE | `/property-interests/{id}` | |
+
+### Example: Use Cases 1–5 via curl
+
+```bash
+TOKEN="<supabase-access-token>"
+API=http://localhost:8000/api/v1
+
+# 1. Create a contact
+CONTACT=$(curl -s -X POST $API/contacts -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"first_name":"Juan","last_name":"Perez","phone":"+52 811 000 0000"}')
+CONTACT_ID=$(echo $CONTACT | jq -r .id)
+
+# 2. Create a property
+PROPERTY=$(curl -s -X POST $API/properties -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"title":"Casa Valle Oriente","property_type":"house","status":"active","price":5000000,"city":"San Pedro Garza Garcia","neighborhood":"Valle Oriente","bedrooms":3,"bathrooms":2,"construction_m2":250}')
+
+# 3. Case A — Juan is interested in that specific property
+curl -s -X POST $API/contacts/$CONTACT_ID/property-interests -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"property_id\":\"$(echo $PROPERTY | jq -r .id)\",\"status\":\"interested\"}"
+
+# 4. Case B — Juan didn't like it, but still wants a house in San Pedro
+REQUIREMENT=$(curl -s -X POST $API/contacts/$CONTACT_ID/buyer-requirements -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"property_type":"house","budget_min":4000000,"budget_max":5000000,"bedrooms_min":3,"bathrooms_min":2,"construction_m2_min":180}')
+REQUIREMENT_ID=$(echo $REQUIREMENT | jq -r .id)
+curl -s -X POST $API/buyer-requirements/$REQUIREMENT_ID/locations -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"city":"San Pedro Garza Garcia","neighborhood":"Valle Oriente","priority":1}'
+
+# 5. Find matching properties (no AI — deterministic SQL, see below)
+curl -s $API/buyer-requirements/$REQUIREMENT_ID/matches -H "Authorization: Bearer $TOKEN"
+```
+
+### How matching works (`app/services/matching_service.py`)
+
+Deterministic, no AI: given a `BuyerRequirement`, candidate `Property` rows in the same organization are filtered by `status = 'active'`, `property_type`, budget range, every `*_min` threshold (bedrooms/bathrooms/m²/parking), and — if the requirement lists any — a match against at least one preferred location. A property missing **any** `must_have` feature is a **hard exclusion**, not a scoring penalty; surviving candidates are ranked by how many `preferred` features they also have. Every numeric threshold treats a `NULL` property value as "doesn't qualify" (a property with an unset budget/bedroom count can't be confirmed to satisfy a requirement) — kept consistent across every field rather than special-casing some as lenient.
+
+## Security considerations
+
+- **JWT verification is the real security boundary here** — not the frontend's `proxy.ts` (documented there as optimistic-only). Every protected route depends on `get_current_org_user`, which cryptographically verifies the token against Supabase's own public keys.
+- **No `service_role` key anywhere in this codebase.** JWKS verification only needs public keys. If a future feature needs the Supabase Admin API, that key must live only in this backend's own environment (never `NEXT_PUBLIC_*`, never in the frontend).
+- **Tenant isolation is enforced server-side on every query** (`organization_id` from the verified token, never taken from client input) — not left to the client to get right.
+- **`DATABASE_URL` contains your database password** — never commit a real value; only `.env.example` (placeholders) is tracked. `.env` is gitignored.
+- **No Row Level Security yet.** Isolation is enforced in the application layer (services/repositories), not via Postgres RLS — this backend connects with a single pooled role, not per-user Postgres sessions, so RLS would need a different connection strategy (`SET LOCAL` per-request claims) to be meaningful. A reasonable future hardening layer, not implemented in Phase 1.
+- **No sensitive financial data stored** — no bank account numbers, passwords, or credit card details anywhere in this schema, per the project brief. `financing_type`/`preapproval_status` are coarse status fields only.
+
+## What's next
+
+- Wire the frontend's `lib/api/*` to this backend instead of mock data.
+- A self-service way to provision `users` rows (invites/onboarding) — right now it's a manual `INSERT`.
+- Transactions, commissions, documents, notary/closing workflow (explicitly out of scope for Phase 1).
+- Appointments (exists as mock data in the frontend already; not in this backend yet).
+- The real AI agents (Lead Intelligence, Follow-up, Sales Copilot) — this backend's deterministic `/matches` endpoint is the foundation they'll build on, not a replacement for them.
+- Row Level Security, once/if the connection strategy supports it.
+- Async SQLAlchemy, if/when request volume justifies the added complexity — sync was the deliberate Phase 1 choice for simplicity.
+
+## Known environment note
+
+This machine runs Node 20.17 for the frontend and Python 3.12.6 here — both fine for this phase. `uv` was not preinstalled and was added via `pip install uv` as the first setup step; anyone else setting this up should do the same (or use `uv`'s official standalone installer).

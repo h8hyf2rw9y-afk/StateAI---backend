@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual environment
+.venv/
+
+# Environment variables — never commit real credentials
+.env
+.env.*
+!.env.example
+
+# uv
+uv.lock.bak
+
+# OS
+.DS_Store
+
+# Claude Code agent skills (local dev tooling, not app code — each
+# developer can `npx skills add supabase/agent-skills` themselves)
+.agents/
+.claude/
+skills-lock.json
