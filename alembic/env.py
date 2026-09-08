@@ -1,6 +1,6 @@
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config
+from sqlalchemy import create_engine
 from sqlalchemy import pool
 
 from alembic import context
@@ -15,9 +15,12 @@ from app.models.base import Base
 # access to the values within the .ini file in use.
 config = context.config
 
-# DATABASE_URL comes from our own Settings (.env / real env vars), never
-# from alembic.ini — so the same secret isn't duplicated in two places.
-config.set_main_option("sqlalchemy.url", settings.database_url)
+# DATABASE_URL comes from our own Settings (.env / real env vars) and is
+# used directly below (create_engine / context.configure(url=...)) rather
+# than routed through config.set_main_option — configparser's default
+# interpolation treats a bare "%" as the start of a %(...)s reference, which
+# breaks on a percent-encoded password (e.g. "%40" for "@") unless doubled
+# to "%%". Passing the URL straight to SQLAlchemy sidesteps that entirely.
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
@@ -49,9 +52,8 @@ def run_migrations_offline() -> None:
     script output.
 
     """
-    url = config.get_main_option("sqlalchemy.url")
     context.configure(
-        url=url,
+        url=settings.database_url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
@@ -69,11 +71,7 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
+    connectable = create_engine(settings.database_url, poolclass=pool.NullPool)
 
     with connectable.connect() as connection:
         context.configure(
