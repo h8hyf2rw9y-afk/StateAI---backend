@@ -104,3 +104,21 @@ PropertyInterestStatus = Literal[
     "lost",
     "won",
 ]
+
+ACTIVITY_TYPES: tuple[str, ...] = (
+    "call",
+    "whatsapp",
+    "email",
+    "property_viewing",
+    "follow_up",
+    "meeting",
+    "note",
+    "offer",
+    "negotiation",
+)
+ActivityType = Literal[
+    "call", "whatsapp", "email", "property_viewing", "follow_up", "meeting", "note", "offer", "negotiation"
+]
+
+ACTIVITY_DIRECTIONS: tuple[str, ...] = ("inbound", "outbound")
+ActivityDirection = Literal["inbound", "outbound"]

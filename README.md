@@ -20,7 +20,7 @@ Este repositorio contiene el **backend** del proyecto (la API y la lógica de se
 
 ## Status
 
-🚧 **Phase 1: foundational data model**, implemented and tested (25 passing tests) against a local SQLite substitute — not yet applied to the real Supabase Postgres database (needs a `DATABASE_URL` — see [Setup](#setup)). No FastAPI-side business workflows beyond basic CRUD + deterministic matching exist yet: no transactions, commissions, documents, appointments, AI agents, or advanced automation. See [What's next](#whats-next).
+🚧 **Foundational data model + Activities/Interactions**, live on the real Supabase Postgres database, seeded with realistic demo data, and covered by 40 passing tests. No FastAPI-side business workflows beyond CRUD + deterministic matching + activity logging exist yet: no transactions, commissions, documents, appointments, AI agents, or advanced automation. See [What's next](#whats-next).
 
 ## Core architectural principle
 
@@ -101,14 +101,23 @@ Every business table (except the two catalogs and the join tables) carries `orga
 | `buyer_requirement_locations` | A requirement can list several acceptable areas, ranked by `priority` — never a single free-text field. |
 | `buyer_requirement_features` | Catalog junction with a `classification`: `must_have` / `preferred` / `deal_breaker`. |
 | `property_interests` | Case A — a Contact's interest in one specific Property. Not unique on `(contact_id, property_id)`: a contact can lose and regain interest over time, and that history is kept. |
+| `activities` | A structured, chronological record of what actually happened with a Contact (call, WhatsApp, viewing, offer, …) — `property_id` optional (only set when the activity is about a specific listing), `created_by_user_id` optional. `occurred_at` is a business timestamp (*when it happened*), separate from the inherited `created_at`/`updated_at` audit trail (*when the row was logged*) — the same split `property_interests` already uses via `first_contact_at`/`last_contact_at`. This is what replaces free-text `notes` as the CRM's real timeline; see [Activities](#activities). |
 
 **The `auth.users` reference**: `app/models/external.py` defines a minimal `Table` stand-in for Supabase's own `auth.users` — not a real model, just enough for SQLAlchemy to resolve `users.id`'s foreign key against it (SQLAlchemy requires the referenced table to exist somewhere in its metadata graph, even for an external, unmanaged table). `alembic/env.py`'s `include_object` filter explicitly excludes anything in the `auth` schema from autogenerate, so migrations never try to create/alter/drop Supabase's own table.
 
 **Catalog seeding**: `contact_roles`, `property_features`, and `buyer_requirement_features` all foreign-key into `roles`/`features`, so those two catalogs are seeded with their initial rows (`app/core/seed_data.py`) as part of the initial migration itself — nothing can reference a role/feature that doesn't exist yet.
 
+## Activities
+
+The CRM's actual timeline — "what happened with this contact" — as a normalized, queryable log instead of a free-text `notes` field. This is the primary context source future agents (Lead Intelligence, Follow-up, Sales Copilot) will read from.
+
+**Fields, and what was deliberately left out**: `activity_type` (soft enum: `call`/`whatsapp`/`email`/`property_viewing`/`follow_up`/`meeting`/`note`/`offer`/`negotiation`), optional `direction` (`inbound`/`outbound`), required `contact_id`, optional `property_id`, optional `created_by_user_id`, required `occurred_at` + `notes`. No `status` — an Activity is something that *already happened*; it has no lifecycle (a future Appointments module, for things not yet happened, is where scheduling status belongs). No `subject` — one content field is enough for now. No speculative `metadata` JSON column. Activities are append-only (no `PATCH`/`DELETE` routes) — a real CRM history log isn't edited, a correction is a new entry.
+
+Endpoints: `POST`/`GET /contacts/{id}/activities` (create; the timeline, oldest-first, filterable by `activity_type`/`occurred_from`/`occurred_to`), `GET /properties/{id}/activities` (most-recent-first), `GET /activities/{id}`.
+
 ## Demo data
 
-`scripts/seed_demo_data.py` populates 20 fictional contacts spanning both ways a person enters the CRM (10 interested in a specific property, 10 with a buyer requirement — including the Property-Interest→not-interested→Buyer-Requirement transition case and a contact whose requirement changed over time), plus ~14 supporting properties, under one dedicated **"State AI Demo Organization"**.
+`scripts/seed_demo_data.py` populates 20 fictional contacts spanning both ways a person enters the CRM (10 interested in a specific property, 10 with a buyer requirement — including the Property-Interest→not-interested→Buyer-Requirement transition case and a contact whose requirement changed over time), plus ~14 supporting properties and a chronological Activity timeline (2-5 entries) for every contact, under one dedicated **"State AI Demo Organization"**.
 
 ```bash
 uv run python scripts/seed_demo_data.py            # create or update — safe to run repeatedly
@@ -182,15 +191,18 @@ All endpoints below live under `/api/v1` and require `Authorization: Bearer <sup
 | POST, DELETE | `/contacts/{id}/roles[/{role_key}]` | Assign / remove a role. |
 | GET, POST | `/contacts/{id}/buyer-requirements` | List / create *for that contact* (Case B). |
 | GET, POST | `/contacts/{id}/property-interests` | List / create *for that contact* (Case A). |
+| GET, POST | `/contacts/{id}/activities` | Create / the contact's timeline (oldest first) — see [Activities](#activities). |
 | GET, POST | `/properties` | |
 | GET, PATCH, DELETE | `/properties/{id}` | |
 | POST, DELETE | `/properties/{id}/features[/{feature_key}]` | What a property actually has. |
+| GET | `/properties/{id}/activities` | Most-recent-first. |
 | GET | `/buyer-requirements` | |
 | GET, PATCH, DELETE | `/buyer-requirements/{id}` | |
 | POST | `/buyer-requirements/{id}/locations` | Add a preferred area. |
 | POST | `/buyer-requirements/{id}/features` | Tag a must-have/preferred/deal-breaker feature. |
 | **GET** | **`/buyer-requirements/{id}/matches`** | **Use Case 5** — deterministic candidate properties (see below). |
 | GET, PATCH, DELETE | `/property-interests/{id}` | |
+| GET | `/activities/{id}` | |
 
 ### Example: Use Cases 1–5 via curl
 
@@ -237,11 +249,11 @@ Deterministic, no AI: given a `BuyerRequirement`, candidate `Property` rows in t
 
 ## What's next
 
+- The real AI agents (Lead Intelligence, Follow-up, Sales Copilot) — Activities plus the deterministic `/matches` endpoint are the foundation they'll build on, not a replacement for them.
 - Wire the frontend's `lib/api/*` to this backend instead of mock data.
 - A self-service way to provision `users` rows (invites/onboarding) — right now it's a manual `INSERT`.
-- Transactions, commissions, documents, notary/closing workflow (explicitly out of scope for Phase 1).
-- Appointments (exists as mock data in the frontend already; not in this backend yet).
-- The real AI agents (Lead Intelligence, Follow-up, Sales Copilot) — this backend's deterministic `/matches` endpoint is the foundation they'll build on, not a replacement for them.
+- Transactions, commissions, documents, notary/closing workflow (explicitly out of scope so far).
+- Appointments — a separate module from Activities (future events vs. historical record); exists as mock data in the frontend already, not in this backend yet.
 - Row Level Security, once/if the connection strategy supports it.
 - Async SQLAlchemy, if/when request volume justifies the added complexity — sync was the deliberate Phase 1 choice for simplicity.
 

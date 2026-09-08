@@ -16,6 +16,7 @@ from app.models.buyer_requirement import (  # noqa: F401
     BuyerRequirementFeature,
 )
 from app.models.property_interest import PropertyInterest  # noqa: F401
+from app.models.activity import Activity  # noqa: F401
 
 __all__ = [
     "Base",
@@ -32,4 +33,5 @@ __all__ = [
     "BuyerRequirementLocation",
     "BuyerRequirementFeature",
     "PropertyInterest",
+    "Activity",
 ]

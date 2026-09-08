@@ -1,12 +1,16 @@
 import uuid
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import get_current_org_user
+from app.schemas.activity import ActivityRead
+from app.schemas.enums import ActivityType
 from app.schemas.property import PropertyCreate, PropertyFeatureAssign, PropertyRead, PropertyUpdate
 from app.schemas.user import CurrentUser
+from app.services.activity_service import ActivityService
 from app.services.property_service import PropertyService
 
 router = APIRouter(prefix="/properties", tags=["properties"])
@@ -77,3 +81,21 @@ def remove_property_feature(
     db: Session = Depends(get_db),
 ) -> PropertyRead:
     return PropertyService(db).remove_feature(current_user.organization_id, property_id, feature_key)
+
+
+@router.get("/{property_id}/activities", response_model=list[ActivityRead])
+def list_property_activities(
+    property_id: uuid.UUID,
+    activity_type: ActivityType | None = Query(None),
+    occurred_from: datetime | None = Query(None),
+    occurred_to: datetime | None = Query(None),
+    current_user: CurrentUser = Depends(get_current_org_user),
+    db: Session = Depends(get_db),
+) -> list[ActivityRead]:
+    return ActivityService(db).list_for_property(
+        current_user.organization_id,
+        property_id,
+        activity_type=activity_type,
+        occurred_from=occurred_from,
+        occurred_to=occurred_to,
+    )

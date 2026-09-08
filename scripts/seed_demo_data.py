@@ -7,12 +7,13 @@ reference. Everything belongs to one dedicated "State AI Demo Organization"
 so it can be reset independently of anything else.
 
 No fields are invented that don't exist on the current schema (see
-app/models/) — no ai_score, no conversion_probability, no activities table.
-Where the spec described history that this schema has nowhere to put (e.g.
-"no response for 5 days"), that narrative lives in the relevant row's
-`notes` field plus realistic `created_at`/`first_contact_at`/`last_contact_at`
-timestamps instead — see the README's "Demo data" section and the final
-report for why.
+app/models/) — no ai_score, no conversion_probability. Every contact also
+gets a chronological Activity timeline (calls, WhatsApp, viewings, offers,
+...) reflecting the same narrative already summarized in each entity's
+`notes` field — the structured, queryable version of that history, which
+is what future AI agents (Lead Intelligence, Follow-up, Sales Copilot) will
+actually read instead of parsing free text. See the README's "Demo data"
+section and the final report for more.
 
 Usage:
     uv run python scripts/seed_demo_data.py            # create or update
@@ -42,6 +43,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
+from app.models.activity import Activity
 from app.models.buyer_requirement import (
     BuyerRequirement,
     BuyerRequirementFeature,
@@ -661,13 +663,181 @@ BUYER_REQUIREMENTS: list[dict[str, Any]] = [
 CONTACT_ROLES: dict[str, list[str]] = {c["key"]: ["buyer"] for c in CONTACTS}
 CONTACT_ROLES["ricardo-hernandez"].append("investor")
 
+# ---------------------------------------------------------------------------
+# Activities — a chronological timeline per contact (oldest first), the
+# structured version of the narrative already summarized in each contact's
+# `notes`. Every one of the 20 gets at least one entry; the "existing
+# leads" get richer, multi-step timelines matching their detailed
+# scenarios. Inbound "chat" messages from Facebook/Instagram/Marketplace
+# are logged as `whatsapp` (closest existing type to a customer-facing chat
+# channel) rather than stretching `call`/`email` to fit or inventing a new
+# type — flagged here rather than silently.
+# ---------------------------------------------------------------------------
+
+ACTIVITIES: dict[str, list[dict[str, Any]]] = {
+    # --- 10 new leads ---
+    "alejandro-torres": [
+        {"days_ago": 2, "activity_type": "call", "direction": "inbound",
+         "notes": "Contacto inicial — busca casa en San Pedro Garza García o Valle Oriente."},
+        {"days_ago": 1, "activity_type": "whatsapp", "direction": "outbound",
+         "notes": "Se enviaron recomendaciones de propiedades."},
+        {"days_ago": 0, "activity_type": "follow_up", "direction": "outbound",
+         "notes": "Seguimiento — cliente en proceso de preaprobación hipotecaria."},
+    ],
+    "sofia-martinez": [
+        {"days_ago": 1, "activity_type": "whatsapp", "direction": "inbound", "property_key": "casa-valle-oriente",
+         "notes": "Vio la propiedad en Facebook y escribió pidiendo información."},
+    ],
+    "diego-ramirez": [
+        {"days_ago": 3, "activity_type": "call", "direction": "inbound",
+         "notes": "Contacto inicial — busca departamento en Valle Oriente o Del Valle."},
+        {"days_ago": 2, "activity_type": "email", "direction": "outbound",
+         "notes": "Se enviaron opciones de departamentos disponibles."},
+    ],
+    "fernanda-lopez": [
+        {"days_ago": 3, "activity_type": "email", "direction": "inbound", "property_key": "departamento-del-valle",
+         "notes": "Preguntó precio y disponibilidad vía Inmuebles24."},
+        {"days_ago": 2, "activity_type": "email", "direction": "outbound", "property_key": "departamento-del-valle",
+         "notes": "Se envió información de precio y disponibilidad."},
+    ],
+    "ricardo-hernandez": [
+        {"days_ago": 4, "activity_type": "call", "direction": "inbound",
+         "notes": "Contacto inicial — inversionista busca departamento o local comercial para renta."},
+        {"days_ago": 3, "activity_type": "whatsapp", "direction": "outbound",
+         "notes": "Se compartieron opciones de inversión en Monterrey y San Nicolás."},
+    ],
+    "valeria-garcia": [
+        {"days_ago": 1, "activity_type": "whatsapp", "direction": "inbound", "property_key": "casa-cumbres",
+         "notes": "Preguntó precio y características por Instagram."},
+    ],
+    "andres-morales": [
+        {"days_ago": 2, "activity_type": "call", "direction": "inbound",
+         "notes": "Contacto inicial — comprador familiar busca casa con jardín."},
+        {"days_ago": 1, "activity_type": "whatsapp", "direction": "outbound",
+         "notes": "Se enviaron opciones en Cumbres y Carretera Nacional."},
+    ],
+    "mariana-sanchez": [
+        {"days_ago": 4, "activity_type": "whatsapp", "direction": "inbound", "property_key": "casa-carretera-nacional",
+         "notes": "Referida por cliente anterior, preguntó por la propiedad."},
+        {"days_ago": 3, "activity_type": "call", "direction": "outbound", "property_key": "casa-carretera-nacional",
+         "notes": "Se coordinó para agendar visita."},
+    ],
+    "jorge-castillo": [
+        {"days_ago": 5, "activity_type": "call", "direction": "inbound",
+         "notes": "Contacto inicial — busca terreno en Apodaca o Escobedo para construir."},
+        {"days_ago": 4, "activity_type": "email", "direction": "outbound",
+         "notes": "Se enviaron opciones de terrenos disponibles."},
+    ],
+    "daniela-flores": [
+        {"days_ago": 2, "activity_type": "whatsapp", "direction": "inbound", "property_key": "casa-san-jeronimo",
+         "notes": "Preguntó por opciones de financiamiento vía Facebook Marketplace."},
+    ],
+    # --- 10 existing leads ---
+    "carlos-mendoza": [
+        {"days_ago": 14, "activity_type": "call", "direction": "inbound", "notes": "Contacto inicial."},
+        {"days_ago": 13, "activity_type": "whatsapp", "direction": "outbound",
+         "notes": "Se enviaron 3 recomendaciones de propiedades."},
+        {"days_ago": 10, "activity_type": "property_viewing", "property_key": "casa-san-pedro-alejandro",
+         "notes": "Visita a la primera propiedad recomendada, en San Pedro."},
+        {"days_ago": 8, "activity_type": "property_viewing", "property_key": "casa-santa-catarina-sergio",
+         "notes": "Visita a la segunda propiedad recomendada, en Santa Catarina."},
+        {"days_ago": 5, "activity_type": "follow_up", "direction": "outbound",
+         "notes": "Seguimiento enviado — sin respuesta desde entonces."},
+    ],
+    "laura-gonzalez": [
+        {"days_ago": 12, "activity_type": "whatsapp", "direction": "inbound", "property_key": "casa-valle-oriente",
+         "notes": "Consulta inicial sobre la propiedad."},
+        {"days_ago": 9, "activity_type": "property_viewing", "property_key": "casa-valle-oriente",
+         "notes": "Visita a la propiedad — cliente muy interesada."},
+        {"days_ago": 5, "activity_type": "note", "property_key": "casa-valle-oriente",
+         "notes": "Cliente confirmó que le encantó la propiedad."},
+        {"days_ago": 2, "activity_type": "negotiation", "direction": "outbound", "property_key": "casa-valle-oriente",
+         "notes": "Preguntó por posibilidad de negociar el precio — posible oferta."},
+    ],
+    "miguel-herrera": [
+        {"days_ago": 10, "activity_type": "call", "direction": "inbound",
+         "notes": "Contacto inicial — busca departamento en San Pedro o Valle Oriente."},
+        {"days_ago": 7, "activity_type": "whatsapp", "direction": "outbound",
+         "notes": "Se enviaron las primeras recomendaciones."},
+        {"days_ago": 4, "activity_type": "note",
+         "notes": "Ninguna opción coincidió bien — se requieren mejores recomendaciones."},
+    ],
+    "paola-rodriguez": [
+        {"days_ago": 15, "activity_type": "whatsapp", "direction": "inbound", "property_key": "casa-cumbres",
+         "notes": "Consulta inicial sobre la propiedad."},
+        {"days_ago": 11, "activity_type": "property_viewing", "property_key": "casa-cumbres",
+         "notes": "Visita a la propiedad."},
+        {"days_ago": 6, "activity_type": "offer", "direction": "inbound", "property_key": "casa-cumbres",
+         "notes": "Cliente envió una oferta informal."},
+        {"days_ago": 3, "activity_type": "negotiation", "property_key": "casa-cumbres",
+         "notes": "El vendedor está revisando la oferta."},
+    ],
+    "fernando-vargas": [
+        {"days_ago": 11, "activity_type": "call", "direction": "inbound",
+         "notes": "Contacto inicial — comprador preaprobado busca casa en Carretera Nacional."},
+        {"days_ago": 8, "activity_type": "property_viewing", "property_key": "casa-carretera-nacional",
+         "notes": "Primera visita."},
+        {"days_ago": 6, "activity_type": "property_viewing", "property_key": "casa-cumbres-andres",
+         "notes": "Segunda visita, opción alterna en Cumbres."},
+        {"days_ago": 4, "activity_type": "property_viewing", "property_key": "casa-san-jeronimo",
+         "notes": "Tercera visita, opción alterna en San Jerónimo."},
+        {"days_ago": 2, "activity_type": "follow_up", "direction": "outbound",
+         "notes": "Muy interesado, evaluando opciones — comprador altamente calificado."},
+    ],
+    "gabriela-ortiz": [
+        {"days_ago": 18, "activity_type": "whatsapp", "direction": "inbound", "property_key": "departamento-del-valle",
+         "notes": "Consulta inicial sobre la propiedad."},
+        {"days_ago": 14, "activity_type": "property_viewing", "property_key": "departamento-del-valle",
+         "notes": "Visita a la propiedad."},
+        {"days_ago": 10, "activity_type": "note", "property_key": "departamento-del-valle",
+         "notes": "Cliente decidió que la propiedad no era para ella — no interesada."},
+        {"days_ago": 10, "activity_type": "follow_up", "direction": "outbound",
+         "notes": "Cliente sigue buscando — se inicia búsqueda con nuevos criterios (ver requerimiento de compra)."},
+    ],
+    "sergio-navarro": [
+        {"days_ago": 25, "activity_type": "call", "direction": "inbound",
+         "notes": "Contacto inicial — busca casa en San Pedro, MXN 5M-6M."},
+        {"days_ago": 20, "activity_type": "whatsapp", "direction": "outbound",
+         "notes": "Se enviaron opciones en San Pedro."},
+        {"days_ago": 6, "activity_type": "note",
+         "notes": "Cliente actualizó su búsqueda — presupuesto y zonas cambiaron a Santa Catarina y Cumbres, MXN 4M-4.5M."},
+        {"days_ago": 4, "activity_type": "whatsapp", "direction": "outbound",
+         "notes": "Se enviaron nuevas opciones según los criterios actualizados."},
+    ],
+    "natalia-ramirez": [
+        {"days_ago": 9, "activity_type": "whatsapp", "direction": "inbound", "property_key": "casa-carretera-nacional",
+         "notes": "Consulta inicial sobre la propiedad."},
+        {"days_ago": 5, "activity_type": "property_viewing", "property_key": "casa-carretera-nacional",
+         "notes": "Primera visita completada."},
+        {"days_ago": 1, "activity_type": "follow_up", "direction": "inbound", "property_key": "casa-carretera-nacional",
+         "notes": "Cliente solicitó una segunda visita — ya agendada."},
+    ],
+    "eduardo-jimenez": [
+        {"days_ago": 21, "activity_type": "call", "direction": "inbound",
+         "notes": "Conversación inicial — busca casa en Monterrey o Guadalupe."},
+    ],
+    "carolina-reyes": [
+        {"days_ago": 16, "activity_type": "whatsapp", "direction": "inbound", "property_key": "casa-san-jeronimo",
+         "notes": "Consulta inicial sobre la propiedad vía Facebook."},
+        {"days_ago": 12, "activity_type": "property_viewing", "property_key": "casa-san-jeronimo",
+         "notes": "Visita a la propiedad."},
+        {"days_ago": 7, "activity_type": "follow_up", "direction": "outbound", "property_key": "casa-san-jeronimo",
+         "notes": "Seguimiento completado."},
+        {"days_ago": 4, "activity_type": "note", "property_key": "casa-san-jeronimo",
+         "notes": "Cliente pidió el precio final."},
+        {"days_ago": 2, "activity_type": "negotiation", "property_key": "casa-san-jeronimo",
+         "notes": "Cliente está considerando hacer una oferta."},
+    ],
+}
+
 
 # ---------------------------------------------------------------------------
 # Seed steps
 # ---------------------------------------------------------------------------
 
 
-def seed_organization(session: Session) -> Organization:
+def seed_organization(session: Session) -> tuple[Organization, uuid.UUID | None]:
+    """Returns (organization, egr_user_id_or_None) — the latter is used as every demo Activity's `created_by_user_id`."""
     org_id = det_id(DEMO_ORG_KEY)
     org = upsert(session, Organization, org_id, name=DEMO_ORG_NAME)
     session.flush()
@@ -696,10 +866,12 @@ def seed_organization(session: Session) -> Organization:
 
     if auth_user_exists:
         upsert(session, User, EGR_TEST_USER_ID, organization_id=org_id, role="owner")
+        creator_user_id = EGR_TEST_USER_ID
     else:
         print(f"Note: no auth.users row for {EGR_TEST_USER_ID} — skipping the egr test-login link.")
+        creator_user_id = None
 
-    return org
+    return org, creator_user_id
 
 
 def seed_properties(session: Session, org_id: uuid.UUID) -> dict[str, Property]:
@@ -818,13 +990,42 @@ def seed_buyer_requirements(session: Session, org_id: uuid.UUID, contacts: dict[
     session.flush()
 
 
+def seed_activities(
+    session: Session,
+    org_id: uuid.UUID,
+    contacts: dict[str, Contact],
+    properties: dict[str, Property],
+    created_by_user_id: uuid.UUID | None,
+) -> None:
+    for contact_key, entries in ACTIVITIES.items():
+        contact = contacts[contact_key]
+        for i, entry in enumerate(entries, start=1):
+            property_key = entry.get("property_key")
+            upsert(
+                session,
+                Activity,
+                det_id(f"activity:{contact_key}:{i}"),
+                organization_id=org_id,
+                contact_id=contact.id,
+                property_id=properties[property_key].id if property_key else None,
+                created_by_user_id=created_by_user_id,
+                activity_type=entry["activity_type"],
+                direction=entry.get("direction"),
+                occurred_at=days_ago(entry["days_ago"]),
+                notes=entry["notes"],
+                created_at=days_ago(entry["days_ago"]),
+            )
+    session.flush()
+
+
 def run_seed(session: Session) -> Organization:
-    org = seed_organization(session)
+    org, creator_user_id = seed_organization(session)
     properties = seed_properties(session, org.id)
     contacts = seed_contacts(session, org.id)
     seed_contact_roles(session, contacts)
     seed_property_interests(session, org.id, contacts, properties)
     seed_buyer_requirements(session, org.id, contacts)
+    seed_activities(session, org.id, contacts, properties, creator_user_id)
     session.commit()
     return org
 
@@ -862,6 +1063,7 @@ def print_summary(session: Session, org: Organization) -> None:
     print(f"  properties:          {count('properties')}")
     print(f"  buyer_requirements:  {count('buyer_requirements')}")
     print(f"  property_interests:  {count('property_interests')}")
+    print(f"  activities:          {count('activities')}")
 
 
 def main() -> None:

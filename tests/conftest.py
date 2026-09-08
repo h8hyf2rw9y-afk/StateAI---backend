@@ -25,7 +25,7 @@ from app.main import app  # noqa: E402
 from app.models.base import Base  # noqa: E402
 from app.models.contact import Role  # noqa: E402
 from app.models.feature import Feature  # noqa: E402
-from app.models.organization import Organization  # noqa: E402
+from app.models.organization import Organization, User  # noqa: E402
 from app.schemas.user import CurrentUser  # noqa: E402
 
 
@@ -73,10 +73,21 @@ def organization_id(db_session) -> uuid.UUID:
 
 
 @pytest.fixture()
-def current_user(organization_id) -> CurrentUser:
-    """A fake authenticated user — bypasses real JWT verification (see test_security.py for that in isolation)."""
+def current_user(db_session, organization_id) -> CurrentUser:
+    """
+    A fake authenticated user — bypasses real JWT verification (see
+    test_security.py for that in isolation) via get_current_org_user's
+    override below, not a real DB lookup. Still backed by a real `users`
+    row, though: some entities (e.g. Activity.created_by_user_id) have a
+    real foreign key to `users.id`, so `current_user.id` must resolve to an
+    actual row for those inserts to succeed, same as it would with a real
+    session.
+    """
+    user_id = uuid.uuid4()
+    db_session.add(User(id=user_id, organization_id=organization_id, role="agent"))
+    db_session.commit()
     return CurrentUser(
-        id=uuid.uuid4(),
+        id=user_id,
         email="agent@example.com",
         organization_id=organization_id,
         role="agent",
@@ -86,13 +97,7 @@ def current_user(organization_id) -> CurrentUser:
 
 @pytest.fixture()
 def client(db_session, current_user):
-    """
-    A TestClient wired to the in-memory DB and a fake authenticated user —
-    for exercising the CRUD routes without a real Supabase project.
-    Deliberately does NOT create a `users` bridge row: routes go through
-    get_current_org_user's override below, not the real DB lookup, so the
-    403 "not assigned to an organization" path is tested separately.
-    """
+    """A TestClient wired to the in-memory DB and a fake authenticated user — for exercising the CRUD routes without a real Supabase project."""
 
     def override_get_db():
         yield db_session
