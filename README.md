@@ -203,6 +203,7 @@ All endpoints below live under `/api/v1` and require `Authorization: Bearer <sup
 | **GET** | **`/buyer-requirements/{id}/matches`** | **Use Case 5** — deterministic candidate properties (see below). |
 | GET, PATCH, DELETE | `/property-interests/{id}` | |
 | GET | `/activities/{id}` | |
+| GET | `/ai/lead-context/{contact_id}` | Internal/debug surface for the AI Context Layer — see below. |
 
 ### Example: Use Cases 1–5 via curl
 
@@ -238,6 +239,38 @@ curl -s $API/buyer-requirements/$REQUIREMENT_ID/matches -H "Authorization: Beare
 
 Deterministic, no AI: given a `BuyerRequirement`, candidate `Property` rows in the same organization are filtered by `status = 'active'`, `property_type`, budget range, every `*_min` threshold (bedrooms/bathrooms/m²/parking), and — if the requirement lists any — a match against at least one preferred location. A property missing **any** `must_have` feature is a **hard exclusion**, not a scoring penalty; surviving candidates are ranked by how many `preferred` features they also have. Every numeric threshold treats a `NULL` property value as "doesn't qualify" (a property with an unset budget/bedroom count can't be confirmed to satisfy a requirement) — kept consistent across every field rather than special-casing some as lenient.
 
+## AI Context Layer
+
+The seam between the CRM's real data and the future AI agents (Lead Intelligence first, then Follow-up, Sales Copilot) — deterministic and non-LLM. Nothing in this layer calls Claude, OpenAI, or any other model; it only assembles data that already exists into a structure an agent can read.
+
+**Required flow, and where each piece lives:**
+
+```
+AI Agent  →  AI Tool  →  Backend Service  →  Repository  →  Supabase
+(future)     app/ai/     app/services/       app/repositories/
+             lead_context_tool.py  lead_context_service.py   (existing, reused as-is)
+```
+
+- **Repository layer**: unchanged — `LeadContextService` composes the existing `ContactRepository`, `BuyerRequirementRepository`, `PropertyInterestRepository`, `ActivityRepository`, and `PropertyRepository`. No new repository methods were needed.
+- **Backend Service** (`app/services/lead_context_service.py`): `LeadContextService(db).build(organization_id, contact_id, *, activity_limit=20)` — 404s the same way every other service does if the contact isn't found in that organization, then assembles a `LeadContext` (`app/schemas/lead_context.py`).
+- **AI Tool** (`app/ai/lead_context_tool.py`): `get_lead_context(current_user, contact_id, db, *, activity_limit=20)`. This is the actual security boundary — it takes the **whole authenticated `CurrentUser`**, never a bare `organization_id`, so there is no parameter an agent (or a manipulated prompt) could supply to reach another organization's data: `CurrentUser` can only be constructed by `get_current_org_user` from a verified Supabase JWT (see [Authentication](#authentication)). A small `LEAD_CONTEXT_TOOL_SCHEMA` dict alongside it documents the tool's name/description/input shape for whoever wires up the actual agent framework later — descriptive metadata only, not wired to any SDK yet.
+
+**`LeadContext` (the schema)** is a typed tree, not concatenated text, so an agent's prompt-building code reads specific fields instead of parsing prose:
+
+- `contact` — identity, role keys, source, preferred contact method.
+- `buyer_requirements` — **all** of them, including `cancelled`/superseded ones, with their `locations`/`features`. Losing old rows would break the exact history this layer exists to preserve (e.g. Sergio Navarro's changed criteria in the demo data).
+- `property_interests` — **all** of them, including `not_interested`. Same reasoning: Gabriela Ortiz's rejected-property-interest → active-buyer-requirement transition (Case A → Case B) only makes sense if both rows are visible together.
+- `properties` — the de-duplicated set of properties referenced by those interests and activities.
+- `activities` — the most recent `activity_limit` (default `20`), newest first.
+- `timeline` — activities + property-interest/buyer-requirement creation events merged into one oldest-first list, the single "story so far" an agent can read start to finish instead of interleaving three lists itself.
+- `engagement_summary` — `activity_count`, `last_activity_at`, `days_since_last_activity`, `has_active_buyer_requirement`, `active_property_interest_count`. Only objective aggregations of facts already in the data (a count, a max date, a day difference, a boolean) — deliberately **no** `ai_score`, `conversion_probability`, or "hot/warm/cold" label. Computing a fact is this layer's job; judging what it means is the future Lead Intelligence Agent's.
+
+**Data minimization**: no password, auth token, API key, or other `users`/Supabase-auth field is ever included — the tool only touches CRM entities. `activity_limit` (default `20`, capped at `200` on the route) is the one context-size control in place now; the parameter/pattern is there so future limits (e.g. on `timeline`) are a small addition, not a redesign — the other lists are naturally small per contact and weren't limited yet, to avoid over-engineering ahead of real usage data.
+
+**Why a route exists** (`GET /ai/lead-context/{contact_id}?activity_limit=`, under a new `/ai` prefix since more AI-layer endpoints are coming): it's how every other feature in this backend gets verified end-to-end against the real Supabase project rather than only unit-tested, it adds no security surface beyond what the tool itself already enforces (same `get_current_org_user` dependency as every other route), and it doubles as a low-risk "what would the AI see for this lead" debugging surface during development. It is not meant for the frontend UI.
+
+**Tests** (`tests/test_lead_context.py`): a plain contact with no related data; a contact with a buyer requirement; one with a property interest; one with activities (and timeline ordering); one with both a property interest and a buyer requirement at once; Gabriela's Case A → Case B transition against the real seeded demo data (both rows present, correctly ordered, nothing lost or duplicated); organization isolation (the tool rejects a contact id from another organization with a 404, even though it was asked for by id); partial data (only activities, every list still well-formed); determinism (two back-to-back calls produce identical output apart from `generated_at`); and one HTTP-level smoke test for the route itself. Most call `LeadContextService`/`get_lead_context` directly rather than through HTTP — the whole point of this layer is to be testable without a running server or any agent framework.
+
 ## Security considerations
 
 - **JWT verification is the real security boundary here** — not the frontend's `proxy.ts` (documented there as optimistic-only). Every protected route depends on `get_current_org_user`, which cryptographically verifies the token against Supabase's own public keys.
@@ -249,7 +282,7 @@ Deterministic, no AI: given a `BuyerRequirement`, candidate `Property` rows in t
 
 ## What's next
 
-- The real AI agents (Lead Intelligence, Follow-up, Sales Copilot) — Activities plus the deterministic `/matches` endpoint are the foundation they'll build on, not a replacement for them.
+- The real AI agents (Lead Intelligence first, then Follow-up, Sales Copilot) — the AI Context Layer (`get_lead_context`, see above), Activities, and the deterministic `/matches` endpoint are the foundation they'll build on, not a replacement for them. This is the next phase: actually calling an LLM, prompt orchestration, and (if needed) RAG/embeddings — none of which exist in this codebase yet.
 - Wire the frontend's `lib/api/*` to this backend instead of mock data.
 - A self-service way to provision `users` rows (invites/onboarding) — right now it's a manual `INSERT`.
 - Transactions, commissions, documents, notary/closing workflow (explicitly out of scope so far).
