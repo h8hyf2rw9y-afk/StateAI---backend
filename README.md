@@ -39,7 +39,7 @@ The same Contact can have both over time (loses interest in one property, but st
 - **SQLAlchemy 2.0** (sync, `Mapped`/`mapped_column` style) + **Alembic** for migrations
 - **PostgreSQL via Supabase** (`psycopg` v3 driver)
 - **Supabase Auth** for authentication — verified via JWKS (asymmetric signing keys), not recreated. See [Authentication](#authentication).
-- **Anthropic Python SDK** — the Lead Intelligence Agent's only LLM call today, behind a small provider abstraction so it isn't the only one possible. See [Lead Intelligence Agent](#lead-intelligence-agent).
+- **Ollama** (local dev, default) **+ Anthropic Python SDK** (production option) — the Lead Intelligence Agent's two LLM providers, behind one small provider abstraction so neither is hardwired in. See [Lead Intelligence Agent](#lead-intelligence-agent).
 - **uv** for dependency management (`pyproject.toml` + `uv.lock`)
 - **pytest** + FastAPI's `TestClient` for tests
 
@@ -154,8 +154,10 @@ uv sync
 cp .env.example .env
 # then fill in DATABASE_URL (Supabase dashboard -> Project Settings -> Database
 # -> Connection string) and SUPABASE_URL (same value the frontend uses).
-# ANTHROPIC_API_KEY is optional — only needed for the Lead Intelligence
-# Agent (see below); every other endpoint works without it.
+# LLM_PROVIDER defaults to "ollama" (local, no API key) for the Lead
+# Intelligence Agent — see "Running Ollama locally" below to set that up,
+# or switch LLM_PROVIDER=anthropic and set ANTHROPIC_API_KEY instead. Every
+# other endpoint works regardless.
 
 # 4. Apply migrations to your real Supabase Postgres
 uv run alembic upgrade head
@@ -283,39 +285,68 @@ The first real AI agent in this codebase, and the first time this backend makes 
 
 ### Provider abstraction (`app/ai/llm/`)
 
-The agent depends on `LLMProvider` (`base.py`), an abstract interface with one real method — `generate_structured(system_prompt, user_prompt, response_model) -> response_model instance` — never on a specific vendor SDK. `AnthropicProvider` is the only implementation today; adding `OpenAIProvider`/`OllamaProvider`/`HuggingFaceProvider` later means adding another class here and a case in `factory.py`, not touching the agent or the route. `app/ai/llm/errors.py` defines one exception family (`LLMConfigError`, `LLMTimeoutError`, `LLMProviderError`, `LLMInvalidOutputError`) so callers never need to catch a vendor-specific exception type.
+The agent depends on `LLMProvider` (`base.py`), an abstract interface with one real method — `generate_structured(system_prompt, user_prompt, response_model) -> response_model instance` — never on a specific vendor SDK. Two implementations exist today:
 
-`AnthropicProvider.generate_structured` gets reliable structured output by forcing a single tool call whose input schema is the requested Pydantic model's own JSON schema (`response_model.model_json_schema()`, sent as the tool's `input_schema`, with `tool_choice` pinned to that tool's name) — not by asking the model to emit JSON in prose and hoping it parses.
+- **`OllamaProvider`** — talks to a locally running [Ollama](https://ollama.com) server. **The local development default**: no API key, no network egress, no cost.
+- **`AnthropicProvider`** — the production option, preserved and fully functional, just not required for day-to-day development anymore.
 
-`app/ai/llm/factory.py`'s `build_default_provider()` is the one place that decides which provider the app actually uses — reads `ANTHROPIC_API_KEY`/`ANTHROPIC_MODEL` from settings, raises `LLMConfigError` if the key is missing.
+Adding `OpenAIProvider`/`HuggingFaceProvider` later means adding another class here and a case in `factory.py` — not touching the agent or the route. `app/ai/llm/errors.py` defines one exception family (`LLMConfigError`, `LLMTimeoutError`, `LLMProviderError`, `LLMInvalidOutputError`) so callers never need to catch a vendor-specific exception type; both providers also expose a `provider_name` (`"ollama"`/`"anthropic"`, logging only — the agent never branches on it) alongside `model_name`.
+
+`AnthropicProvider.generate_structured` gets reliable structured output by forcing a single tool call whose input schema is the requested Pydantic model's own JSON schema (`response_model.model_json_schema()`, sent as the tool's `input_schema`, with `tool_choice` pinned to that tool's name). `OllamaProvider.generate_structured` uses Ollama's own "Structured outputs" feature instead — the same JSON schema is sent as the request's `format` field, which constrains the model's decoding to that shape; it works with any locally installed chat model, not just tool-calling ones. Neither asks the model to emit JSON in prose and hopes it parses.
+
+`app/ai/llm/factory.py`'s `build_default_provider()` is the one place that decides which provider the app actually uses — see [Provider selection](#provider-selection) below.
+
+### Provider selection
+
+`LLM_PROVIDER` (env var, default `ollama`) picks the branch in `build_default_provider()`:
+
+- **`LLM_PROVIDER=ollama`** (default) — builds an `OllamaProvider` from `OLLAMA_BASE_URL`/`OLLAMA_MODEL`. Needs no `ANTHROPIC_API_KEY` at all; the app starts and this endpoint works with it completely unset.
+- **`LLM_PROVIDER=anthropic`** — builds an `AnthropicProvider` from `ANTHROPIC_API_KEY`/`ANTHROPIC_MODEL`; raises `LLMConfigError` (surfaced as `503`) if the key is missing.
+
+No provider registry — it's an `if`/`elif` in one function, on purpose (see [What's next](#whats-next) for when a registry might actually earn its keep).
 
 ### Model configuration
 
-The model name is never hardcoded — `app/core/config.py`'s `anthropic_model` (env var `ANTHROPIC_MODEL`, default `claude-sonnet-5`) is the single source of truth, read once by the factory above. Change it by setting the environment variable, not by editing code.
+Model names are never hardcoded — `app/core/config.py`'s `ollama_model` (env `OLLAMA_MODEL`, default `llama3.1`) and `anthropic_model` (env `ANTHROPIC_MODEL`, default `claude-sonnet-5`) are the single source of truth for each provider, read once by the factory above. Change either by setting its environment variable, not by editing code.
 
 ### Environment variables
 
 Add to your `.env` (see `.env.example`):
 
 ```bash
-ANTHROPIC_API_KEY=sk-ant-...    # from https://console.anthropic.com/settings/keys — required for this feature only
+# Local development (default) — needs Ollama installed and running, see below.
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=llama3.1
+
+# Production option — only read when LLM_PROVIDER=anthropic.
+ANTHROPIC_API_KEY=sk-ant-...    # from https://console.anthropic.com/settings/keys
 ANTHROPIC_MODEL=claude-sonnet-5 # optional, this is already the default
 ```
 
-Every other endpoint in this backend works with `ANTHROPIC_API_KEY` unset — only `POST /ai/lead-intelligence/{contact_id}` needs it, and responds `503` (not a crash, not a leaked provider error) if it's missing.
+Every other endpoint in this backend works regardless of any of this. With `LLM_PROVIDER=ollama` (the default), `ANTHROPIC_API_KEY` isn't needed at all.
+
+### Running Ollama locally
+
+1. Install Ollama — Windows: download from [ollama.com/download](https://ollama.com/download), or `winget install Ollama.Ollama`. macOS/Linux: see the same page.
+2. Pull the configured model (matches `OLLAMA_MODEL`'s default): `ollama pull llama3.1` (~4.7 GB).
+3. Make sure the server is up: `curl http://localhost:11434/api/tags` should return JSON, not a connection error. The installer usually registers Ollama as a background service that's already running; if not, `ollama serve`.
+4. Call the endpoint as usual (see [API](#api) below) — no other setup needed.
+
+If Ollama isn't installed or the model isn't pulled, `POST /ai/lead-intelligence/{contact_id}` fails cleanly (`502`, with a message telling you exactly which of those two is missing — see [Error handling](#error-handling)) instead of hanging or crashing.
 
 ### Structured output (`app/schemas/lead_intelligence.py`)
 
 Two schemas, deliberately separate:
 
-- **`LeadIntelligenceAnalysis`** — exactly what the LLM is asked to produce (its JSON schema *is* the forced tool-call shape): `priority` (`high`/`medium`/`low`, soft enum in `app/schemas/enums.py`), `confidence` (`0.0`-`1.0`), `reasoning`, `positive_signals`/`risk_signals` (lists of short strings), `recommended_next_action` (soft enum: `call`/`whatsapp`/`email`/`schedule_viewing`/`send_properties`/`follow_up`/`meeting`/`re_engage`/`no_action_needed`), and `insufficient_data` (a boolean the model sets instead of guessing when the context is too sparse to say anything meaningful).
+- **`LeadIntelligenceAnalysis`** — exactly what the LLM is asked to produce (its JSON schema *is* the structured-output shape both providers are constrained to): `priority` (`high`/`medium`/`low`, soft enum in `app/schemas/enums.py`), `confidence` (`0.0`-`1.0`), `reasoning`, `positive_signals`/`risk_signals` (lists of short strings), `recommended_next_action` (soft enum: `call`/`whatsapp`/`email`/`schedule_viewing`/`send_properties`/`follow_up`/`meeting`/`re_engage`/`no_action_needed`), and `insufficient_data` (a boolean the model sets instead of guessing when the context is too sparse to say anything meaningful).
 - **`LeadIntelligenceResult`** — what the route actually returns: the analysis plus provenance the agent fills in itself (`contact_id`, `model`, `prompt_version`, `generated_at`) — the LLM can't know its own model name or the current time, so those aren't fields the model fills in.
 
-**Fact vs. inference**: the schema and the system prompt both exist to keep this distinction explicit. `positive_signals`/`risk_signals`/`reasoning` are instructed to stay traceable to facts already present in the `LeadContext` JSON (an activity count, a stated budget, a status) — the *judgment* (`priority`, `recommended_next_action`, `confidence`) is the inference layered on top. No field here is a raw, unexplained score; `reasoning` is mandatory so a human can always see which facts led to which conclusion.
+**Fact vs. inference**: the schema and the system prompt both exist to keep this distinction explicit, regardless of which provider is active. `positive_signals`/`risk_signals`/`reasoning` are instructed to stay traceable to facts already present in the `LeadContext` JSON (an activity count, a stated budget, a status) — the *judgment* (`priority`, `recommended_next_action`, `confidence`) is the inference layered on top. No field here is a raw, unexplained score; `reasoning` is mandatory so a human can always see which facts led to which conclusion.
 
 ### System prompt (`app/ai/prompts/lead_intelligence.py`)
 
-Kept in its own module, versioned via `LEAD_INTELLIGENCE_PROMPT_VERSION` (currently `"v1"`, echoed onto every `LeadIntelligenceResult` so a stored result can be traced back to the exact prompt that produced it). Defines the agent as a real-estate CRM intelligence assistant that reasons only from the provided CRM data, never invents facts, distinguishes facts from inference, treats a rejected-property → buyer-requirement transition (Case A → Case B, see [AI Context Layer](#ai-context-layer)) as one continuing lead rather than two, sets `insufficient_data` honestly when the context is too sparse, and never claims to take action itself.
+Kept in its own module, versioned via `LEAD_INTELLIGENCE_PROMPT_VERSION` (currently `"v1"`, echoed onto every `LeadIntelligenceResult` so a stored result can be traced back to the exact prompt that produced it) — unchanged by, and identical across, whichever provider is active. Defines the agent as a real-estate CRM intelligence assistant that reasons only from the provided CRM data, never invents facts, distinguishes facts from inference, treats a rejected-property → buyer-requirement transition (Case A → Case B, see [AI Context Layer](#ai-context-layer)) as one continuing lead rather than two, sets `insufficient_data` honestly when the context is too sparse, and never claims to take action itself.
 
 ### API
 
@@ -330,10 +361,14 @@ curl -X POST $API/ai/lead-intelligence/$CONTACT_ID -H "Authorization: Bearer $TO
 | Situation | Response |
 |---|---|
 | Contact not found / belongs to another organization | `404` (from `get_lead_context`, same as every other contact-scoped route) |
-| `ANTHROPIC_API_KEY` not configured | `503`, generic message — never a raw provider error |
-| Anthropic API call times out | `504` |
-| Anthropic API returns an error (auth, rate limit, 5xx) | `502`, generic message — provider details are logged server-side only, never sent to the client |
+| `LLM_PROVIDER=anthropic` selected but `ANTHROPIC_API_KEY` not configured | `503`, generic message — never a raw provider error |
+| Ollama server unreachable (not running, wrong `OLLAMA_BASE_URL`) | `502` to the client; the server-side log/exception says plainly to start Ollama (`ollama serve`) |
+| Configured Ollama model not pulled locally | `502` to the client; the server-side log/exception names the exact `ollama pull <model>` command |
+| Provider call times out (either provider) | `504` |
+| Provider returns an error (Anthropic auth/rate-limit/5xx, or an Ollama HTTP error) | `502`, generic message — provider details are logged server-side only, never sent to the client |
 | Model didn't return the requested structured output, or its output fails schema validation | `502`, generic message |
+
+Every one of these is a generic message to the API consumer — the specific, actionable detail (which command to run, which server to start) only ever reaches the server-side log via `logger.warning(...)` in `LeadIntelligenceAgent.analyze`, never the HTTP response body.
 
 ### Read-only, by construction
 
@@ -341,11 +376,20 @@ The agent can analyze, prioritize, and recommend — it cannot send a message, m
 
 ### Testing
 
-`tests/test_lead_intelligence_agent.py` is fully offline and deterministic — a `FakeLLMProvider` (implements `LLMProvider`, returns a canned response or raises a canned error, records every call) stands in for Anthropic throughout, so this file needs no API key and makes no network call. Covers: schema validation (valid payload, out-of-range confidence, unknown priority/action), context retrieval and organization isolation (a nonexistent or cross-org contact 404s *before* the LLM is ever called — asserted via `fake.calls == []`), prompt construction (the contact's name and key facts actually appear in the prompt sent to the "model"), every documented error path (timeout, invalid output) at both the agent and route level, and the `503`/`404` route paths.
+Fully offline and deterministic, no Ollama/Anthropic required, four files:
 
-`tests/test_lead_intelligence_integration.py` is the one test that calls the real Anthropic API — `pytest.mark.skipif`'d unless `ANTHROPIC_API_KEY` actually resolves through settings, so the normal test suite and CI never depend on it or on network access:
+- **`tests/test_lead_intelligence_agent.py`** — a `FakeLLMProvider` (implements `LLMProvider`, returns a canned response or raises a canned error, records every call) stands in for any real provider throughout, so this file needs no API key, no local Ollama, and makes no network call. Covers: schema validation (valid payload, out-of-range confidence, unknown priority/action), context retrieval and organization isolation (a nonexistent or cross-org contact 404s *before* the LLM is ever called — asserted via `fake.calls == []`), prompt construction (the contact's name and key facts actually appear in the prompt sent to the "model"), every documented error path (timeout, invalid output) at both the agent and route level, and the `502`/`503`/`404` route paths.
+- **`tests/test_ollama_provider.py`** — `OllamaProvider` in isolation: a valid structured response, the exact request shape sent (`format` = the schema, correct `model`), timeout, connection-refused (with the "Is Ollama running?" message asserted), model-not-found (404, with the `ollama pull` message asserted), and both malformed-response-shape and schema-validation failure. Every case but one monkeypatches `httpx.post`; the exception is a real connection to a closed local port, proving the "Ollama unavailable" path against a genuine socket failure rather than only a simulated one — still instant, no install needed.
+- **`tests/test_llm_provider_selection.py`** — `build_default_provider()`'s branching: default (`ollama`, no key needed), `anthropic` without a key (`LLMConfigError`), `anthropic` with one (returns a working `AnthropicProvider` — confirms the pre-Ollama implementation is still intact and functional), and both providers satisfying the same `LLMProvider` interface.
+
+Two integration tests call a real provider and are skipped by default — CI and the normal `uv run pytest` run never depend on either:
 
 ```bash
+# Real Ollama, against the demo data's Carlos/Gabriela/Carolina/Sergio — skipped unless
+# a live Ollama server answers at OLLAMA_BASE_URL (probed automatically, no flag needed).
+uv run pytest tests/test_lead_intelligence_ollama_integration.py -v -s
+
+# Real Anthropic — skipped unless ANTHROPIC_API_KEY resolves through settings.
 ANTHROPIC_API_KEY=sk-ant-... uv run pytest tests/test_lead_intelligence_integration.py -v -s
 ```
 
@@ -357,13 +401,15 @@ ANTHROPIC_API_KEY=sk-ant-... uv run pytest tests/test_lead_intelligence_integrat
 - **`DATABASE_URL` contains your database password** — never commit a real value; only `.env.example` (placeholders) is tracked. `.env` is gitignored.
 - **No Row Level Security yet.** Isolation is enforced in the application layer (services/repositories), not via Postgres RLS — this backend connects with a single pooled role, not per-user Postgres sessions, so RLS would need a different connection strategy (`SET LOCAL` per-request claims) to be meaningful. A reasonable future hardening layer, not implemented in Phase 1.
 - **No sensitive financial data stored** — no bank account numbers, passwords, or credit card details anywhere in this schema, per the project brief. `financing_type`/`preapproval_status` are coarse status fields only.
-- **`ANTHROPIC_API_KEY` is a secret like `DATABASE_URL`** — never commit a real value; only `.env.example` (placeholder) is tracked. The LLM only ever receives what `LeadContext` already excludes credentials/passwords/auth data from (see [AI Context Layer](#ai-context-layer)) — it has no database access, direct or otherwise, and cannot choose or run any query.
+- **`ANTHROPIC_API_KEY` is a secret like `DATABASE_URL`** — never commit a real value; only `.env.example` (placeholder) is tracked. With the default `LLM_PROVIDER=ollama`, this key isn't needed or read at all.
+- **Neither LLM provider ever gets database credentials, Supabase credentials, auth tokens, or user passwords** — organization authorization happens in `get_lead_context` *before* any data reaches `LeadContext`, and `LeadContext` itself already excludes that class of field (see [AI Context Layer](#ai-context-layer)). Whether the model runs on Anthropic's servers or entirely on your own machine via Ollama, it has no database access, direct or otherwise, and cannot choose or run any query.
 
 ## What's next
 
 - Follow-up Agent and Sales Copilot, built the same way the Lead Intelligence Agent was: on top of the existing `get_lead_context` tool and the `LLMProvider` abstraction, not a new pattern.
 - Wiring the frontend to the Lead Intelligence Agent's endpoint (deliberately not done yet — backend-only so far, see [Lead Intelligence Agent](#lead-intelligence-agent)).
-- A second `LLMProvider` implementation (OpenAI/Ollama/HuggingFace) to prove the abstraction actually holds — not needed until there's a real reason to switch or compare providers.
+- A real production rollout decision for `LLM_PROVIDER` (Ollama is a local-dev choice, not a production one) — plus a third `LLMProvider` implementation (OpenAI/HuggingFace) if there's ever a real reason to compare providers beyond the two that already exist.
+- A provider registry, if a third or fourth provider ever makes the current `if`/`elif` in `factory.py` awkward — not needed at two providers.
 - Wire the frontend's `lib/api/*` to this backend instead of mock data.
 - A self-service way to provision `users` rows (invites/onboarding) — right now it's a manual `INSERT`.
 - Transactions, commissions, documents, notary/closing workflow (explicitly out of scope so far).

@@ -16,6 +16,11 @@ ResponseModelT = TypeVar("ResponseModelT", bound=BaseModel)
 class LLMProvider(ABC):
     @property
     @abstractmethod
+    def provider_name(self) -> str:
+        """Short identifier for the provider itself (e.g. "ollama", "anthropic") — for logging/observability only. The agent never branches on this."""
+
+    @property
+    @abstractmethod
     def model_name(self) -> str:
         """The concrete model identifier in use — for logging/attribution only, never shown to the LLM itself."""
 

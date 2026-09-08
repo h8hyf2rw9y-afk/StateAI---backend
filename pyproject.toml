@@ -12,12 +12,12 @@ dependencies = [
     "pydantic-settings>=2.6",
     "pyjwt[crypto]>=2.9",
     "anthropic>=1.4.0",
+    "httpx>=0.28",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8.3",
-    "httpx>=0.28",
 ]
 
 [tool.pytest.ini_options]

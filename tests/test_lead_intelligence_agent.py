@@ -46,6 +46,10 @@ class FakeLLMProvider(LLMProvider):
         self.calls: list[tuple[str, str]] = []
 
     @property
+    def provider_name(self) -> str:
+        return "fake"
+
+    @property
     def model_name(self) -> str:
         return "fake-model-v1"
 
@@ -228,10 +232,16 @@ def test_route_returns_analysis_when_provider_is_overridden(client: TestClient):
     assert body["model"] == "fake-model-v1"
 
 
-def test_route_returns_503_when_no_provider_is_configured(client: TestClient, monkeypatch):
-    """Without ANTHROPIC_API_KEY set, the real dependency (not overridden here) must fail as a clean 503, not a 500."""
+def test_route_returns_503_when_anthropic_is_selected_without_a_key(client: TestClient, monkeypatch):
+    """
+    With LLM_PROVIDER=anthropic and no ANTHROPIC_API_KEY, the real dependency
+    (not overridden here) must fail as a clean 503, not a 500. The default
+    provider is "ollama" (needs no key), so this test explicitly switches to
+    "anthropic" to exercise that specific misconfiguration.
+    """
     from app.core.config import settings
 
+    monkeypatch.setattr(settings, "llm_provider", "anthropic")
     monkeypatch.setattr(settings, "anthropic_api_key", None)
     contact = client.post(
         "/api/v1/contacts", json={"first_name": "Nadia", "last_name": "Cruz", "phone": "+52 81 5500 9999"}

@@ -53,17 +53,22 @@ class LeadIntelligenceAgent:
                 response_model=LeadIntelligenceAnalysis,
                 max_tokens=_MAX_TOKENS,
             )
-        except LLMError:
+        except LLMError as exc:
+            # The exception's own message carries the actionable, provider-
+            # specific detail (e.g. "Is Ollama running?", "pull it first
+            # with...") — logged here so a developer sees it locally. Never
+            # sent to the API client: the route only ever returns a generic
+            # message for every LLMError subclass (see app/api/routes/ai.py).
             logger.warning(
-                "lead_intelligence_agent.failed contact_id=%s organization_id=%s model=%s",
-                contact_id, current_user.organization_id, self.llm.model_name,
+                "lead_intelligence_agent.failed contact_id=%s organization_id=%s provider=%s model=%s error=%s",
+                contact_id, current_user.organization_id, self.llm.provider_name, self.llm.model_name, exc,
             )
             raise
 
         latency_ms = int((time.monotonic() - started) * 1000)
         logger.info(
-            "lead_intelligence_agent.analyzed contact_id=%s organization_id=%s model=%s priority=%s latency_ms=%d",
-            contact_id, current_user.organization_id, self.llm.model_name, analysis.priority, latency_ms,
+            "lead_intelligence_agent.analyzed contact_id=%s organization_id=%s provider=%s model=%s priority=%s latency_ms=%d",
+            contact_id, current_user.organization_id, self.llm.provider_name, self.llm.model_name, analysis.priority, latency_ms,
         )
 
         return LeadIntelligenceResult(

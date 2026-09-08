@@ -25,6 +25,10 @@ class AnthropicProvider(LLMProvider):
         self._client = anthropic.Anthropic(api_key=api_key, timeout=timeout)
 
     @property
+    def provider_name(self) -> str:
+        return "anthropic"
+
+    @property
     def model_name(self) -> str:
         return self._model
 
