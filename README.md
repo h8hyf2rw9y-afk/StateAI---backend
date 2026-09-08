@@ -106,6 +106,20 @@ Every business table (except the two catalogs and the join tables) carries `orga
 
 **Catalog seeding**: `contact_roles`, `property_features`, and `buyer_requirement_features` all foreign-key into `roles`/`features`, so those two catalogs are seeded with their initial rows (`app/core/seed_data.py`) as part of the initial migration itself — nothing can reference a role/feature that doesn't exist yet.
 
+## Demo data
+
+`scripts/seed_demo_data.py` populates 20 fictional contacts spanning both ways a person enters the CRM (10 interested in a specific property, 10 with a buyer requirement — including the Property-Interest→not-interested→Buyer-Requirement transition case and a contact whose requirement changed over time), plus ~14 supporting properties, under one dedicated **"State AI Demo Organization"**.
+
+```bash
+uv run python scripts/seed_demo_data.py            # create or update — safe to run repeatedly
+uv run python scripts/seed_demo_data.py --reset     # delete the demo org (cascades everything under it), then reseed
+uv run python scripts/seed_demo_data.py --reset --no-seed   # delete only, don't reseed
+```
+
+**Idempotent by construction**: every row's id is `uuid.uuid5(DEMO_NAMESPACE, "<stable key>")` (e.g. `"contact:alejandro-torres"`), not a random UUID — re-running never creates a duplicate, it updates the same rows in place. `--reset` deletes a single `organizations` row; every table underneath cascades away via the `ondelete="CASCADE"` foreign keys already in the schema (see [Data model](#data-model)), so nothing needs deleting by hand.
+
+The script also re-points your local `egr@proppilot.app` test login (see [Setup](#setup)) at this demo org, so the seeded data shows up immediately when you log into the frontend with it — it looks for that Supabase user id (skipping gracefully with a note if not found, e.g. on a fresh project without that test account).
+
 ## Authentication
 
 Supabase Auth is the identity provider — **not recreated here**. This backend independently verifies every request's Supabase-issued JWT; it does not trust the frontend's own route protection (`proxy.ts` there is explicitly documented as an optimistic, client-side-only check).
