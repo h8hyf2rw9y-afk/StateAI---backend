@@ -27,6 +27,18 @@ class Settings(BaseSettings):
     # Comma-separated list of origins allowed to call this API (CORS).
     frontend_origins: str = "http://localhost:3000"
 
+    # The Lead Intelligence Agent's LLM provider — see app/ai/llm/. `None`
+    # (the default) means the agent is unconfigured: routes return 503
+    # rather than a raw provider error. Never given a real default value
+    # here; only ever set via the environment (see .env.example).
+    anthropic_api_key: str | None = None
+
+    # Not hardcoded anywhere else in the app — every call site reads this.
+    # Anthropic's current models change over time; update this one value
+    # (or the environment variable) rather than a model string embedded in
+    # application code.
+    anthropic_model: str = "claude-sonnet-5"
+
     @property
     def jwks_url(self) -> str:
         return f"{self.supabase_url.rstrip('/')}/auth/v1/.well-known/jwks.json"

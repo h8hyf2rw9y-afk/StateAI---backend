@@ -122,3 +122,23 @@ ActivityType = Literal[
 
 ACTIVITY_DIRECTIONS: tuple[str, ...] = ("inbound", "outbound")
 ActivityDirection = Literal["inbound", "outbound"]
+
+# app/schemas/lead_intelligence.py — the Lead Intelligence Agent's own
+# structured output, same soft-enum treatment as every CRM-facing field.
+LEAD_PRIORITIES: tuple[str, ...] = ("high", "medium", "low")
+LeadPriority = Literal["high", "medium", "low"]
+
+RECOMMENDED_NEXT_ACTIONS: tuple[str, ...] = (
+    "call",
+    "whatsapp",
+    "email",
+    "schedule_viewing",
+    "send_properties",
+    "follow_up",
+    "meeting",
+    "re_engage",
+    "no_action_needed",
+)
+RecommendedNextAction = Literal[
+    "call", "whatsapp", "email", "schedule_viewing", "send_properties", "follow_up", "meeting", "re_engage", "no_action_needed"
+]

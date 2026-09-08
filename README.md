@@ -39,6 +39,7 @@ The same Contact can have both over time (loses interest in one property, but st
 - **SQLAlchemy 2.0** (sync, `Mapped`/`mapped_column` style) + **Alembic** for migrations
 - **PostgreSQL via Supabase** (`psycopg` v3 driver)
 - **Supabase Auth** for authentication — verified via JWKS (asymmetric signing keys), not recreated. See [Authentication](#authentication).
+- **Anthropic Python SDK** — the Lead Intelligence Agent's only LLM call today, behind a small provider abstraction so it isn't the only one possible. See [Lead Intelligence Agent](#lead-intelligence-agent).
 - **uv** for dependency management (`pyproject.toml` + `uv.lock`)
 - **pytest** + FastAPI's `TestClient` for tests
 
@@ -153,6 +154,8 @@ uv sync
 cp .env.example .env
 # then fill in DATABASE_URL (Supabase dashboard -> Project Settings -> Database
 # -> Connection string) and SUPABASE_URL (same value the frontend uses).
+# ANTHROPIC_API_KEY is optional — only needed for the Lead Intelligence
+# Agent (see below); every other endpoint works without it.
 
 # 4. Apply migrations to your real Supabase Postgres
 uv run alembic upgrade head
@@ -203,7 +206,8 @@ All endpoints below live under `/api/v1` and require `Authorization: Bearer <sup
 | **GET** | **`/buyer-requirements/{id}/matches`** | **Use Case 5** — deterministic candidate properties (see below). |
 | GET, PATCH, DELETE | `/property-interests/{id}` | |
 | GET | `/activities/{id}` | |
-| GET | `/ai/lead-context/{contact_id}` | Internal/debug surface for the AI Context Layer — see below. |
+| GET | `/ai/lead-context/{contact_id}` | Internal/debug surface for the AI Context Layer — see [AI Context Layer](#ai-context-layer). |
+| POST | `/ai/lead-intelligence/{contact_id}` | Runs the Lead Intelligence Agent — see [Lead Intelligence Agent](#lead-intelligence-agent). |
 
 ### Example: Use Cases 1–5 via curl
 
@@ -241,7 +245,7 @@ Deterministic, no AI: given a `BuyerRequirement`, candidate `Property` rows in t
 
 ## AI Context Layer
 
-The seam between the CRM's real data and the future AI agents (Lead Intelligence first, then Follow-up, Sales Copilot) — deterministic and non-LLM. Nothing in this layer calls Claude, OpenAI, or any other model; it only assembles data that already exists into a structure an agent can read.
+The seam between the CRM's real data and the AI agents built on top of it — the [Lead Intelligence Agent](#lead-intelligence-agent) today, Follow-up and Sales Copilot later. This layer itself is deterministic and non-LLM: nothing here calls Claude, OpenAI, or any other model; it only assembles data that already exists into a structure an agent can read.
 
 **Required flow, and where each piece lives:**
 
@@ -253,7 +257,7 @@ AI Agent  →  AI Tool  →  Backend Service  →  Repository  →  Supabase
 
 - **Repository layer**: unchanged — `LeadContextService` composes the existing `ContactRepository`, `BuyerRequirementRepository`, `PropertyInterestRepository`, `ActivityRepository`, and `PropertyRepository`. No new repository methods were needed.
 - **Backend Service** (`app/services/lead_context_service.py`): `LeadContextService(db).build(organization_id, contact_id, *, activity_limit=20)` — 404s the same way every other service does if the contact isn't found in that organization, then assembles a `LeadContext` (`app/schemas/lead_context.py`).
-- **AI Tool** (`app/ai/lead_context_tool.py`): `get_lead_context(current_user, contact_id, db, *, activity_limit=20)`. This is the actual security boundary — it takes the **whole authenticated `CurrentUser`**, never a bare `organization_id`, so there is no parameter an agent (or a manipulated prompt) could supply to reach another organization's data: `CurrentUser` can only be constructed by `get_current_org_user` from a verified Supabase JWT (see [Authentication](#authentication)). A small `LEAD_CONTEXT_TOOL_SCHEMA` dict alongside it documents the tool's name/description/input shape for whoever wires up the actual agent framework later — descriptive metadata only, not wired to any SDK yet.
+- **AI Tool** (`app/ai/lead_context_tool.py`): `get_lead_context(current_user, contact_id, db, *, activity_limit=20)`. This is the actual security boundary — it takes the **whole authenticated `CurrentUser`**, never a bare `organization_id`, so there is no parameter an agent (or a manipulated prompt) could supply to reach another organization's data: `CurrentUser` can only be constructed by `get_current_org_user` from a verified Supabase JWT (see [Authentication](#authentication)). A small `LEAD_CONTEXT_TOOL_SCHEMA` dict alongside it documents the tool's name/description/input shape for whoever wires up an agent framework later — descriptive metadata only, not wired to any SDK. The Lead Intelligence Agent (below) is the first real caller of this tool.
 
 **`LeadContext` (the schema)** is a typed tree, not concatenated text, so an agent's prompt-building code reads specific fields instead of parsing prose:
 
@@ -271,6 +275,80 @@ AI Agent  →  AI Tool  →  Backend Service  →  Repository  →  Supabase
 
 **Tests** (`tests/test_lead_context.py`): a plain contact with no related data; a contact with a buyer requirement; one with a property interest; one with activities (and timeline ordering); one with both a property interest and a buyer requirement at once; Gabriela's Case A → Case B transition against the real seeded demo data (both rows present, correctly ordered, nothing lost or duplicated); organization isolation (the tool rejects a contact id from another organization with a 404, even though it was asked for by id); partial data (only activities, every list still well-formed); determinism (two back-to-back calls produce identical output apart from `generated_at`); and one HTTP-level smoke test for the route itself. Most call `LeadContextService`/`get_lead_context` directly rather than through HTTP — the whole point of this layer is to be testable without a running server or any agent framework.
 
+## Lead Intelligence Agent
+
+The first real AI agent in this codebase, and the first time this backend makes an actual LLM call. It's deliberately small: one agent, one provider, read-only, no autonomous actions.
+
+**Flow**: `CurrentUser → get_lead_context → LeadContext → LLMProvider → LeadIntelligenceAnalysis → LeadIntelligenceResult`. The agent never touches a repository or Supabase directly — only `get_lead_context`, same as the contract described in [AI Context Layer](#ai-context-layer).
+
+### Provider abstraction (`app/ai/llm/`)
+
+The agent depends on `LLMProvider` (`base.py`), an abstract interface with one real method — `generate_structured(system_prompt, user_prompt, response_model) -> response_model instance` — never on a specific vendor SDK. `AnthropicProvider` is the only implementation today; adding `OpenAIProvider`/`OllamaProvider`/`HuggingFaceProvider` later means adding another class here and a case in `factory.py`, not touching the agent or the route. `app/ai/llm/errors.py` defines one exception family (`LLMConfigError`, `LLMTimeoutError`, `LLMProviderError`, `LLMInvalidOutputError`) so callers never need to catch a vendor-specific exception type.
+
+`AnthropicProvider.generate_structured` gets reliable structured output by forcing a single tool call whose input schema is the requested Pydantic model's own JSON schema (`response_model.model_json_schema()`, sent as the tool's `input_schema`, with `tool_choice` pinned to that tool's name) — not by asking the model to emit JSON in prose and hoping it parses.
+
+`app/ai/llm/factory.py`'s `build_default_provider()` is the one place that decides which provider the app actually uses — reads `ANTHROPIC_API_KEY`/`ANTHROPIC_MODEL` from settings, raises `LLMConfigError` if the key is missing.
+
+### Model configuration
+
+The model name is never hardcoded — `app/core/config.py`'s `anthropic_model` (env var `ANTHROPIC_MODEL`, default `claude-sonnet-5`) is the single source of truth, read once by the factory above. Change it by setting the environment variable, not by editing code.
+
+### Environment variables
+
+Add to your `.env` (see `.env.example`):
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-...    # from https://console.anthropic.com/settings/keys — required for this feature only
+ANTHROPIC_MODEL=claude-sonnet-5 # optional, this is already the default
+```
+
+Every other endpoint in this backend works with `ANTHROPIC_API_KEY` unset — only `POST /ai/lead-intelligence/{contact_id}` needs it, and responds `503` (not a crash, not a leaked provider error) if it's missing.
+
+### Structured output (`app/schemas/lead_intelligence.py`)
+
+Two schemas, deliberately separate:
+
+- **`LeadIntelligenceAnalysis`** — exactly what the LLM is asked to produce (its JSON schema *is* the forced tool-call shape): `priority` (`high`/`medium`/`low`, soft enum in `app/schemas/enums.py`), `confidence` (`0.0`-`1.0`), `reasoning`, `positive_signals`/`risk_signals` (lists of short strings), `recommended_next_action` (soft enum: `call`/`whatsapp`/`email`/`schedule_viewing`/`send_properties`/`follow_up`/`meeting`/`re_engage`/`no_action_needed`), and `insufficient_data` (a boolean the model sets instead of guessing when the context is too sparse to say anything meaningful).
+- **`LeadIntelligenceResult`** — what the route actually returns: the analysis plus provenance the agent fills in itself (`contact_id`, `model`, `prompt_version`, `generated_at`) — the LLM can't know its own model name or the current time, so those aren't fields the model fills in.
+
+**Fact vs. inference**: the schema and the system prompt both exist to keep this distinction explicit. `positive_signals`/`risk_signals`/`reasoning` are instructed to stay traceable to facts already present in the `LeadContext` JSON (an activity count, a stated budget, a status) — the *judgment* (`priority`, `recommended_next_action`, `confidence`) is the inference layered on top. No field here is a raw, unexplained score; `reasoning` is mandatory so a human can always see which facts led to which conclusion.
+
+### System prompt (`app/ai/prompts/lead_intelligence.py`)
+
+Kept in its own module, versioned via `LEAD_INTELLIGENCE_PROMPT_VERSION` (currently `"v1"`, echoed onto every `LeadIntelligenceResult` so a stored result can be traced back to the exact prompt that produced it). Defines the agent as a real-estate CRM intelligence assistant that reasons only from the provided CRM data, never invents facts, distinguishes facts from inference, treats a rejected-property → buyer-requirement transition (Case A → Case B, see [AI Context Layer](#ai-context-layer)) as one continuing lead rather than two, sets `insufficient_data` honestly when the context is too sparse, and never claims to take action itself.
+
+### API
+
+`POST /ai/lead-intelligence/{contact_id}` — same auth as every other route (`get_current_org_user`); the agent 404s through `get_lead_context` if the contact doesn't exist or belongs to another organization, before the LLM is ever called.
+
+```bash
+curl -X POST $API/ai/lead-intelligence/$CONTACT_ID -H "Authorization: Bearer $TOKEN"
+```
+
+### Error handling
+
+| Situation | Response |
+|---|---|
+| Contact not found / belongs to another organization | `404` (from `get_lead_context`, same as every other contact-scoped route) |
+| `ANTHROPIC_API_KEY` not configured | `503`, generic message — never a raw provider error |
+| Anthropic API call times out | `504` |
+| Anthropic API returns an error (auth, rate limit, 5xx) | `502`, generic message — provider details are logged server-side only, never sent to the client |
+| Model didn't return the requested structured output, or its output fails schema validation | `502`, generic message |
+
+### Read-only, by construction
+
+The agent can analyze, prioritize, and recommend — it cannot send a message, modify a contact or property, create an activity or appointment, or contact anyone. It has no tool other than `get_lead_context`, which is itself read-only; there is nothing in this codebase yet that would let it take an action even if the model asked it to.
+
+### Testing
+
+`tests/test_lead_intelligence_agent.py` is fully offline and deterministic — a `FakeLLMProvider` (implements `LLMProvider`, returns a canned response or raises a canned error, records every call) stands in for Anthropic throughout, so this file needs no API key and makes no network call. Covers: schema validation (valid payload, out-of-range confidence, unknown priority/action), context retrieval and organization isolation (a nonexistent or cross-org contact 404s *before* the LLM is ever called — asserted via `fake.calls == []`), prompt construction (the contact's name and key facts actually appear in the prompt sent to the "model"), every documented error path (timeout, invalid output) at both the agent and route level, and the `503`/`404` route paths.
+
+`tests/test_lead_intelligence_integration.py` is the one test that calls the real Anthropic API — `pytest.mark.skipif`'d unless `ANTHROPIC_API_KEY` actually resolves through settings, so the normal test suite and CI never depend on it or on network access:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-... uv run pytest tests/test_lead_intelligence_integration.py -v -s
+```
+
 ## Security considerations
 
 - **JWT verification is the real security boundary here** — not the frontend's `proxy.ts` (documented there as optimistic-only). Every protected route depends on `get_current_org_user`, which cryptographically verifies the token against Supabase's own public keys.
@@ -279,10 +357,13 @@ AI Agent  →  AI Tool  →  Backend Service  →  Repository  →  Supabase
 - **`DATABASE_URL` contains your database password** — never commit a real value; only `.env.example` (placeholders) is tracked. `.env` is gitignored.
 - **No Row Level Security yet.** Isolation is enforced in the application layer (services/repositories), not via Postgres RLS — this backend connects with a single pooled role, not per-user Postgres sessions, so RLS would need a different connection strategy (`SET LOCAL` per-request claims) to be meaningful. A reasonable future hardening layer, not implemented in Phase 1.
 - **No sensitive financial data stored** — no bank account numbers, passwords, or credit card details anywhere in this schema, per the project brief. `financing_type`/`preapproval_status` are coarse status fields only.
+- **`ANTHROPIC_API_KEY` is a secret like `DATABASE_URL`** — never commit a real value; only `.env.example` (placeholder) is tracked. The LLM only ever receives what `LeadContext` already excludes credentials/passwords/auth data from (see [AI Context Layer](#ai-context-layer)) — it has no database access, direct or otherwise, and cannot choose or run any query.
 
 ## What's next
 
-- The real AI agents (Lead Intelligence first, then Follow-up, Sales Copilot) — the AI Context Layer (`get_lead_context`, see above), Activities, and the deterministic `/matches` endpoint are the foundation they'll build on, not a replacement for them. This is the next phase: actually calling an LLM, prompt orchestration, and (if needed) RAG/embeddings — none of which exist in this codebase yet.
+- Follow-up Agent and Sales Copilot, built the same way the Lead Intelligence Agent was: on top of the existing `get_lead_context` tool and the `LLMProvider` abstraction, not a new pattern.
+- Wiring the frontend to the Lead Intelligence Agent's endpoint (deliberately not done yet — backend-only so far, see [Lead Intelligence Agent](#lead-intelligence-agent)).
+- A second `LLMProvider` implementation (OpenAI/Ollama/HuggingFace) to prove the abstraction actually holds — not needed until there's a real reason to switch or compare providers.
 - Wire the frontend's `lib/api/*` to this backend instead of mock data.
 - A self-service way to provision `users` rows (invites/onboarding) — right now it's a manual `INSERT`.
 - Transactions, commissions, documents, notary/closing workflow (explicitly out of scope so far).
