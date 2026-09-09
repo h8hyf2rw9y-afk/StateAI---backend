@@ -41,6 +41,8 @@ def _get_llm_provider() -> LLMProvider:
 def read_lead_context(
     contact_id: uuid.UUID,
     activity_limit: int = Query(default=20, ge=0, le=200),
+    task_limit: int = Query(default=20, ge=0, le=200),
+    appointment_limit: int = Query(default=20, ge=0, le=200),
     current_user: CurrentUser = Depends(get_current_org_user),
     db: Session = Depends(get_db),
 ) -> LeadContext:
@@ -50,7 +52,9 @@ def read_lead_context(
     the same auth stack as every other route. Not meant for the frontend UI;
     see app/ai/lead_context_tool.py for why this exists.
     """
-    return get_lead_context(current_user, contact_id, db, activity_limit=activity_limit)
+    return get_lead_context(
+        current_user, contact_id, db, activity_limit=activity_limit, task_limit=task_limit, appointment_limit=appointment_limit
+    )
 
 
 def _run_and_record(agent_id: str, current_user: CurrentUser, contact_id: uuid.UUID, db: Session, llm: LLMProvider):

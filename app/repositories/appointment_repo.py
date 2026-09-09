@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.models.appointment import Appointment
 from app.repositories.base import OrgScopedRepository
@@ -42,4 +42,24 @@ class AppointmentRepository(OrgScopedRepository[Appointment]):
         if start_to is not None:
             stmt = stmt.where(Appointment.start_at <= start_to)
         stmt = stmt.order_by(Appointment.start_at.asc()).limit(limit).offset(offset)
+        return list(self.db.execute(stmt).scalars().all())
+
+    def list_for_contact(
+        self,
+        organization_id: uuid.UUID,
+        contact_id: uuid.UUID,
+        *,
+        opportunity_ids: list[uuid.UUID] | None = None,
+        limit: int = 50,
+    ) -> list[Appointment]:
+        """Used by LeadContextService — see TaskRepository.list_for_contact's docstring for why contact_id-only filtering isn't enough."""
+        conditions = [Appointment.contact_id == contact_id]
+        if opportunity_ids:
+            conditions.append(Appointment.opportunity_id.in_(opportunity_ids))
+        stmt = (
+            select(Appointment)
+            .where(Appointment.organization_id == organization_id, or_(*conditions))
+            .order_by(Appointment.start_at.asc())
+            .limit(limit)
+        )
         return list(self.db.execute(stmt).scalars().all())

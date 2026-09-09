@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.models.task import Task
 from app.repositories.base import OrgScopedRepository
@@ -38,4 +38,31 @@ class TaskRepository(OrgScopedRepository[Task]):
         if opportunity_id is not None:
             stmt = stmt.where(Task.opportunity_id == opportunity_id)
         stmt = stmt.order_by(Task.due_at.asc()).limit(limit).offset(offset)
+        return list(self.db.execute(stmt).scalars().all())
+
+    def list_for_contact(
+        self,
+        organization_id: uuid.UUID,
+        contact_id: uuid.UUID,
+        *,
+        opportunity_ids: list[uuid.UUID] | None = None,
+        limit: int = 50,
+    ) -> list[Task]:
+        """
+        Used by LeadContextService (app/services/lead_context_service.py) —
+        a task about this contact's opportunity doesn't necessarily have its
+        own contact_id set (the two fields are independent), so this matches
+        either: Task.contact_id == contact_id OR Task.opportunity_id in
+        opportunity_ids. Plain contact_id-only filtering (the existing
+        list() method above) would silently miss that second case.
+        """
+        conditions = [Task.contact_id == contact_id]
+        if opportunity_ids:
+            conditions.append(Task.opportunity_id.in_(opportunity_ids))
+        stmt = (
+            select(Task)
+            .where(Task.organization_id == organization_id, or_(*conditions))
+            .order_by(Task.due_at.asc())
+            .limit(limit)
+        )
         return list(self.db.execute(stmt).scalars().all())
