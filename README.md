@@ -20,7 +20,7 @@ Este repositorio contiene el **backend** del proyecto (la API y la lógica de se
 
 ## Status
 
-🚧 **Core CRM (Contacts/Properties/Buyer Requirements/Property Interests/Activities/Features) + the sales Pipeline (Opportunities) + three read-only AI agents (Lead Intelligence, Follow-up, Pipeline) behind an AI Gateway + a production-readiness hardening pass** (Audit Log, AI execution persistence, Tasks, Appointments, a prepared-but-stubbed Calendar Integration layer, a Notification foundation, minimal role authorization, and global structured error handling) — live on the real Supabase Postgres database, seeded with realistic demo data, and covered by 298 passing tests. Still no Transactions, Commissions, Documents, real OAuth calendar sync, notification delivery (email/push/SMS), Sales Copilot, or any autonomous AI action (every agent remains strictly read-only/advisory) — see [What's next](#whats-next) for exactly what's real versus prepared-but-not-implemented.
+🚧 **Core CRM (Contacts/Properties/Buyer Requirements/Property Interests/Activities/Features) + deterministic Buyer Matching + the sales Pipeline (Opportunities) + three read-only AI agents (Lead Intelligence, Follow-up, Pipeline) behind an AI Gateway + a production-readiness hardening pass** (Audit Log, AI execution persistence, Tasks, Appointments, a prepared-but-stubbed Calendar Integration layer, a Notification foundation, minimal role authorization, and global structured error handling) — live on the real Supabase Postgres database, seeded with realistic demo data, and covered by 325 passing tests. Still no Transactions, Commissions, Documents, real OAuth calendar sync, notification delivery (email/push/SMS), Sales Copilot, or any autonomous AI action (every agent remains strictly read-only/advisory) — see [What's next](#whats-next) for exactly what's real versus prepared-but-not-implemented.
 
 ## Core architectural principle
 
@@ -276,6 +276,7 @@ All endpoints below live under `/api/v1` and require `Authorization: Bearer <sup
 | GET, PATCH | `/opportunities/{id}` | PATCH is also how stages change (including closing won/lost, and reopening) — no separate action routes. No DELETE — see [Opportunities / Pipeline](#opportunities--pipeline). |
 | GET | `/opportunities/{id}/activities` | The deal's own timeline, oldest first — includes every auto-recorded stage-change entry. |
 | **GET** | **`/buyer-requirements/{id}/matches`** | **Use Case 5** — deterministic candidate properties (see below). |
+| **GET** | **`/buyer-requirements/{id}/property-matches`** | **Buyer Matching** — every active property, classified match/partial_match/no_match with explained criteria (see below). Not a replacement for `/matches` above — a separate, richer analysis. |
 | GET | `/features` | The global feature catalog (`app/models/feature.py`) — `?active=false` includes inactive features too. Defaults to active-only. |
 | GET, PATCH | `/property-interests/{id}` | |
 | **DELETE** | **`/property-interests/{id}`** | **owner/admin only.** |
@@ -329,6 +330,21 @@ curl -s $API/buyer-requirements/$REQUIREMENT_ID/matches -H "Authorization: Beare
 ### How matching works (`app/services/matching_service.py`)
 
 Deterministic, no AI: given a `BuyerRequirement`, candidate `Property` rows in the same organization are filtered by `status = 'active'`, `property_type`, budget range, every `*_min` threshold (bedrooms/bathrooms/m²/parking), and — if the requirement lists any — a match against at least one preferred location. A property missing **any** `must_have` feature is a **hard exclusion**, not a scoring penalty; surviving candidates are ranked by how many `preferred` features they also have. Every numeric threshold treats a `NULL` property value as "doesn't qualify" (a property with an unset budget/bedroom count can't be confirmed to satisfy a requirement) — kept consistent across every field rather than special-casing some as lenient.
+
+### Buyer Matching — the richer, explainable analysis (`analyze_matches`, same file)
+
+`GET /buyer-requirements/{id}/property-matches` is a **separate method on the same `MatchingService`**, not a redesign of `find_matches` above — deliberately kept alongside it rather than replacing it, since `find_matches`'s existing tests and its existing frontend consumer (`features/buyer-requirements/components/match-list.tsx`) both depend on its exact current "silently exclude non-qualifying properties" behavior. The difference: `find_matches` folds every criterion into one SQL `WHERE` clause, so a property that doesn't qualify was never fetched and can't be explained; `analyze_matches` instead fetches every `status = "active"` property in the organization and evaluates each one **criterion-by-criterion in Python**, so every property gets a real, inspectable result — including the ones that don't match at all.
+
+**Criteria evaluated** (only when the requirement actually specifies a value for it — a `NULL` requirement field is "no preference," never counted as met or unmet): property type, budget (with an explicit currency-mismatch check — no FX conversion is invented, a mismatched currency is reported as unconfirmable, not silently compared), city, state, and neighborhood (each independently — a requirement's several `BuyerRequirementLocation` rows are OR'd together per field, same "any one location is enough" philosophy `find_matches` already uses, just split into three separate explainable dimensions instead of one combined AND-per-location filter), bedrooms, bathrooms, parking spaces, construction area, and land area (each a `_min`/`_max` range check against the property's single value). `postal_code` exists on `Property` but has **no corresponding field on `BuyerRequirementLocation`** — confirmed by reading the model, not assumed — so it's never evaluated as a criterion; there's nothing on the requirement side to compare it against.
+
+**Features** are evaluated individually, not as one aggregate count: a `must_have` feature the property lacks, or a `deal_breaker` feature the property has, is a **hard override to `no_match`** regardless of how many other criteria matched (same "hard exclusion, not a scoring penalty" philosophy `find_matches` already established for `must_have` — extended here to `deal_breaker`, a real `FeatureClassification` value `find_matches` itself never actually checked). Each `preferred` feature present or missing is its own explained criterion, not folded into a single "N of M" number.
+
+**Classification** (`match` / `partial_match` / `no_match`) is a plain, documented rule — no numeric score, no invented weighting:
+- A missing `must_have` feature or a present `deal_breaker` feature → always `no_match`.
+- Otherwise: every specified criterion satisfied → `match`; none satisfied → `no_match`; some but not all → `partial_match`.
+- A requirement that specifies **no** comparable criteria at all → `partial_match` (neither a match nor a mismatch can honestly be claimed from zero criteria — a deliberate, documented edge case, not an oversight).
+
+Results are sorted best-first (by classification, then by how many criteria were met) and capped by the same `limit` (default 20, max 100) convention as `find_matches`. The response (`PropertyMatchAnalysis`, `app/schemas/matching.py`) carries `criteria_met`/`criteria_unmet` as plain human-readable sentences and one `summary` line — no score field anywhere on the model.
 
 ## AI Context Layer
 

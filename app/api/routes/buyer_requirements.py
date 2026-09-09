@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import get_current_org_user, require_role
 from app.schemas.buyer_requirement import BuyerRequirementRead, BuyerRequirementUpdate, FeatureAssign, LocationCreate
-from app.schemas.matching import PropertyMatchRead
+from app.schemas.matching import PropertyMatchAnalysis, PropertyMatchRead
 from app.schemas.user import CurrentUser
 from app.services.buyer_requirement_service import BuyerRequirementService
 from app.services.matching_service import MatchingService
@@ -120,3 +120,21 @@ def get_buyer_requirement_matches(
         )
         for m in matches
     ]
+
+
+@router.get("/{requirement_id}/property-matches", response_model=list[PropertyMatchAnalysis])
+def get_buyer_requirement_property_matches(
+    requirement_id: uuid.UUID,
+    limit: int = Query(20, ge=1, le=100),
+    current_user: CurrentUser = Depends(get_current_org_user),
+    db: Session = Depends(get_db),
+) -> list[PropertyMatchAnalysis]:
+    """
+    A richer, explainable sibling of GET .../matches above: every active
+    property in the organization gets a match/partial_match/no_match
+    classification plus the specific criteria it met and didn't, instead
+    of qualifying properties being silently returned and everything else
+    silently excluded. Still fully deterministic, no AI — see
+    app/services/matching_service.py's `analyze_matches`.
+    """
+    return MatchingService(db).analyze_matches(current_user.organization_id, requirement_id, limit=limit)
