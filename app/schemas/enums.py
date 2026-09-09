@@ -316,3 +316,37 @@ OpportunityLostReason = Literal[
     "price", "financing_denied", "chose_another_property", "chose_competitor",
     "unresponsive", "changed_mind", "timeline_changed", "other",
 ]
+
+# app/schemas/pipeline.py — the Pipeline Agent's own structured output.
+# A distinct set from RECOMMENDED_NEXT_ACTIONS (Lead Intelligence) and
+# FOLLOW_UP_ACTIONS (Follow-up) on purpose, same as those two are already
+# distinct from each other: this agent reasons at the *deal* level (an
+# Opportunity's stage/value/close date), so several of its actions
+# (review_offer, negotiate, collect_documents, review_financing,
+# coordinate_notary, create_task, monitor) don't exist in either of the
+# other two vocabularies. Some values overlap in spelling (call, whatsapp,
+# email, follow_up, send_properties) because the same real-world action
+# is genuinely relevant to more than one question — each agent still gets
+# its own Literal type, not a shared one, matching how this file already
+# keeps RecommendedNextAction and FollowUpAction independent.
+PIPELINE_ACTIONS: tuple[str, ...] = (
+    "call",
+    "whatsapp",
+    "email",
+    "follow_up",
+    "send_properties",
+    "schedule_viewing",
+    "prepare_appointment",
+    "review_offer",
+    "negotiate",
+    "collect_documents",
+    "review_financing",
+    "coordinate_notary",
+    "create_task",
+    "monitor",
+)
+PipelineAction = Literal[
+    "call", "whatsapp", "email", "follow_up", "send_properties", "schedule_viewing", "prepare_appointment",
+    "review_offer", "negotiate", "collect_documents", "review_financing", "coordinate_notary", "create_task",
+    "monitor",
+]

@@ -20,7 +20,7 @@ Este repositorio contiene el **backend** del proyecto (la API y la lógica de se
 
 ## Status
 
-🚧 **Core CRM (Contacts/Properties/Buyer Requirements/Property Interests/Activities/Features) + the sales Pipeline (Opportunities, now including in the AI Context Layer) + two read-only AI agents (Lead Intelligence, Follow-up) behind an AI Gateway + a production-readiness hardening pass** (Audit Log, AI execution persistence, Tasks, Appointments, a prepared-but-stubbed Calendar Integration layer, a Notification foundation, minimal role authorization, and global structured error handling) — live on the real Supabase Postgres database, seeded with realistic demo data, and covered by 264 passing tests. Still no Transactions, Commissions, Documents, real OAuth calendar sync, notification delivery (email/push/SMS), or any AI agent that actually *reasons about* the Pipeline (the context is now prepared for one — see [AI Context Layer](#ai-context-layer)) — see [What's next](#whats-next) for exactly what's real versus prepared-but-not-implemented.
+🚧 **Core CRM (Contacts/Properties/Buyer Requirements/Property Interests/Activities/Features) + the sales Pipeline (Opportunities) + three read-only AI agents (Lead Intelligence, Follow-up, Pipeline) behind an AI Gateway + a production-readiness hardening pass** (Audit Log, AI execution persistence, Tasks, Appointments, a prepared-but-stubbed Calendar Integration layer, a Notification foundation, minimal role authorization, and global structured error handling) — live on the real Supabase Postgres database, seeded with realistic demo data, and covered by 298 passing tests. Still no Transactions, Commissions, Documents, real OAuth calendar sync, notification delivery (email/push/SMS), Sales Copilot, or any autonomous AI action (every agent remains strictly read-only/advisory) — see [What's next](#whats-next) for exactly what's real versus prepared-but-not-implemented.
 
 ## Core architectural principle
 
@@ -72,8 +72,10 @@ app/
                                          # Activity creation — see Opportunities / Pipeline
   ai/
     lead_context_tool.py      # get_lead_context — the AI Context Layer's tool
-    gateway.py                    # AIGateway — orchestrates agents; deliberately never touches the database
-    registry.py                      # AGENT_REGISTRY — the explicit list of runnable agents
+    pipeline_agent.py             # PipelineAgent — see Pipeline Agent
+    prompts/pipeline.py               # PIPELINE_SYSTEM_PROMPT
+    gateway.py                          # AIGateway — orchestrates agents; deliberately never touches the database
+    registry.py                            # AGENT_REGISTRY — the explicit list of runnable agents
   integrations/
     calendar/                 # CalendarProvider interface + Google/Apple/Notion STUBS only — see
                                  # Calendar Integration Architecture. Nothing here is called by any route today.
@@ -98,6 +100,7 @@ tests/
   test_agent_execution.py                     # AI execution persistence, success/failure, isolation
   test_opportunities_api.py                      # BUY/SELL creation, stage changes, won/lost/reopen, isolation
   test_lead_context_opportunities.py                # AI Context Layer's Opportunity/Task/Appointment extension
+  test_pipeline_agent.py                               # Pipeline Agent: schema, agent, route — offline, FakeLLMProvider
   test_tasks_api.py                                 # Task CRUD, lifecycle, cross-org references, isolation
   test_appointments_api.py                             # Appointment CRUD, lifecycle, isolation
   test_notifications_api.py                            # personal ownership, unread filtering
@@ -280,6 +283,7 @@ All endpoints below live under `/api/v1` and require `Authorization: Bearer <sup
 | GET | `/ai/lead-context/{contact_id}` | Internal/debug surface for the AI Context Layer — see [AI Context Layer](#ai-context-layer). |
 | POST | `/ai/lead-intelligence/{contact_id}` | Runs the Lead Intelligence Agent — persists an `AgentExecution` either way. See [Lead Intelligence Agent](#lead-intelligence-agent) and [AI Execution Persistence](#ai-execution-persistence). |
 | POST | `/ai/follow-up/{contact_id}` | Runs the Follow-up Agent — persists an `AgentExecution` either way. See [Follow-up Agent](#follow-up-agent). |
+| POST | `/ai/pipeline/{contact_id}` | Runs the Pipeline Agent — persists an `AgentExecution` either way. See [Pipeline Agent](#pipeline-agent). |
 | GET | `/ai/agent-executions` | History of AI runs for this org, filterable by `contact_id`/`agent_name`. |
 | GET, PATCH | `/ai/agent-executions/{id}` | PATCH sets `human_action` (`acted_on`/`dismissed`) — the only client-writable field. |
 | GET | `/audit-logs`, `/audit-logs/{id}` | Read-only — see [Audit Logging](#audit-logging). |
@@ -527,31 +531,97 @@ Same guarantee as Lead Intelligence, worth restating because this agent's whole 
 
 `tests/test_follow_up_agent_ollama_integration.py` — the real-Ollama smoke test, gated the same way as Lead Intelligence's (`RUN_OLLAMA_INTEGRATION_TESTS=1` plus a live server; see that section above for why reachability alone isn't enough). Runs Carlos/Gabriela/Carolina/Sergio and checks only the structural contract (valid enum values, `confidence` in range, `recommended_channel="none"` whenever `should_follow_up` is false) — never a hardcoded expected conclusion.
 
+## Pipeline Agent
+
+The third real AI agent, built on exactly the same architecture as [Lead Intelligence Agent](#lead-intelligence-agent) and [Follow-up Agent](#follow-up-agent) — same `LeadContext`, same `LLMProvider` abstraction, same providers, same route/error-handling shape, same read-only guarantee. It answers a third, different question: not "how important is this lead" and not "does this lead need contact right now", but **"where does this contact's pipeline of Opportunities stand, and what does the advisor need to do about it?"**
+
+| | Lead Intelligence | Follow-up | Pipeline |
+|---|---|---|---|
+| Question | "How important is this lead overall?" | "Does this lead need follow-up **right now**?" | "Where do this contact's **Opportunities** stand, and what needs attention?" |
+| Schema | `LeadIntelligenceAnalysis` | `FollowUpRecommendation` | `PipelineAnalysis` |
+| Prompt | `app/ai/prompts/lead_intelligence.py` | `app/ai/prompts/follow_up.py` | `app/ai/prompts/pipeline.py` (written from scratch, not derived from the other two) |
+| Route | `POST /ai/lead-intelligence/{contact_id}` | `POST /ai/follow-up/{contact_id}` | `POST /ai/pipeline/{contact_id}` |
+
+**Flow**: `CurrentUser → get_lead_context → LeadContext → LLMProvider → PipelineAnalysis → PipelineResult` — identical shape to the other two agents, reusing the same AI Tool. `PipelineAgent` (`app/ai/pipeline_agent.py`) never touches a repository or Supabase directly — `get_lead_context` is its only source of CRM data, exactly like the other two.
+
+### Response schema (`app/schemas/pipeline.py`)
+
+`PipelineAnalysis` — what the LLM produces: `overall_priority` (reuses `LeadPriority`), `summary`, `confidence` (`0.0`-`1.0`), and three lists reasoned about independently per Opportunity — never merged, never assuming the newest is the only one that matters (see [Opportunities / Pipeline](#opportunities--pipeline)'s own domain rule, now enforced at the prompt level too):
+
+- `opportunities: list[OpportunityRecommendation]` — one entry per opportunity worth surfacing, each with its own `opportunity_id`, `priority`, `status_assessment` (a short factual sentence, not a fixed category — see below), `reason`, `recommended_action`, `confidence`.
+- `immediate_actions: list[ImmediateAction]` — `opportunity_id`, `action`, `reason`, `urgency` (reuses `TaskPriority`'s four levels — low/medium/high/**urgent** — a closer fit for "how soon" than the three-level `LeadPriority`).
+- `risk_flags: list[RiskFlag]` — `opportunity_id`, `risk` (a short factual description, not a fixed category), `reason`, `severity` (reuses `LeadPriority`, same three-value scale already reused for `FollowUpRecommendation.priority`).
+
+`PipelineResult` wraps it with the same provenance fields as the other two agents (`contact_id`, `model`, `prompt_version`, `generated_at`) — **note the deliberate placement**: `contact_id` lives on `PipelineResult`, not inside `PipelineAnalysis`, even though the task brief that specified this schema suggested putting it there. Reasoning: the caller already knows which contact was analyzed (it's the function argument), so asking the LLM to also faithfully reproduce that single UUID only risks it being typo'd — exactly the same reasoning `LeadIntelligenceResult`/`FollowUpResult` already apply. `opportunity_id` on each nested item is different and does have to come from the model: a contact can have *several* opportunities, so the model must say which one each item is about; there's no wrapper-level equivalent for that. This is the one intentional schema deviation from the task's suggested field list, made to keep the same convention the other two agents already established — see the schema file's own docstring for the full reasoning.
+
+**`status_assessment`/`risk` are free text, not enums, on purpose**: every categorical/actionable field here (`priority`, `recommended_action`, `severity`, `urgency`) is a strict soft enum, matching this codebase's established convention — but the situations an opportunity can be in, or a risk can describe, are genuinely varied ("active, no activity in 9 days despite an upcoming appointment" reads very differently from "won 2 days ago, no documentation task created yet"). Forcing either into a fixed category would itself be exactly the kind of arbitrary rule the brief asked this agent to avoid ("do not create hard-coded rules like '5 days always means cold'") — so both stay short factual sentences, the same treatment `reasoning`/`positive_signals`/`risk_signals` already get on `LeadIntelligenceAnalysis`.
+
+**No hard-coded scoring**: `priority`/`overall_priority` are never computed from a formula (e.g. `expected_value × probability`) — the brief was explicit that the LLM makes the final reasoning from the combination of signals, not a mathematical score, and this codebase has no `ai_score` field anywhere to hang one on. The model sees every relevant raw signal (stage, expected_value, probability, expected_close_date, activity recency/direction, overdue tasks, upcoming appointments, historical stage changes via the timeline) and reasons over the combination itself.
+
+### System prompt (`app/ai/prompts/pipeline.py`)
+
+Written from scratch, not derived from the other two. Versioned via `PIPELINE_PROMPT_VERSION` (`v1`). Explicitly instructs the model to: reason only from the supplied JSON, never inventing facts, opportunities, or properties; distinguish fact from inference from recommendation; **never confuse Contact, Property, BuyerRequirement, and Opportunity** — a contact can have several opportunities over time and several at once, a lost opportunity doesn't mean the contact is lost, and a buyer can also be a seller; reason about every opportunity's *combination* of signals rather than any single field or a fixed day-count rule; only include an opportunity/action/risk when the data genuinely supports it (an opportunity with nothing concerning gets no risk flag; a contact with no opportunities gets empty lists); only recommend actions the available information actually supports (e.g. never `coordinate_notary` unless the data shows the deal is actually near contract/closing); and the same `confidence`-is-a-decimal-never-a-percentage rule as the other two agents.
+
+### Agent (`app/ai/pipeline_agent.py`)
+
+`PipelineAgent(db, llm).analyze(current_user, contact_id) -> PipelineResult` — same five-step shape as the task brief asked for and the other two agents already follow: resolve `CurrentUser` → `get_lead_context` → hand the context to `LLMProvider.generate_structured` → Pydantic validates the response against `PipelineAnalysis` → wrap as `PipelineResult`. `_MAX_TOKENS = 1536` here, higher than the other two agents' `1024`: this agent's output can include several nested opportunities/actions/risks (one item per Opportunity in the pipeline), not one single judgment — 1024 was measured too tight against real demo contacts with multiple opportunities (Fernando, Gabriela — see [Opportunities / Pipeline](#opportunities--pipeline)'s demo data).
+
+### API
+
+`POST /ai/pipeline/{contact_id}` — identical auth, org-scoping, error-handling shape, and `AgentExecution` persistence as the other two agents' routes (`404` unauthorized/missing contact, `503` misconfigured provider, `504` timeout, `502` provider/invalid-output error; every run, success or failure, recorded via the existing `_run_and_record` helper — see [AI Execution Persistence](#ai-execution-persistence) — with zero new persistence code needed for a third agent).
+
+```bash
+curl -X POST $API/ai/pipeline/$CONTACT_ID -H "Authorization: Bearer $TOKEN"
+```
+
+### Safety: read-only, by construction
+
+Same guarantee as the other two agents, worth restating because this one's whole subject is the pipeline's own state: it can analyze and recommend, but it has no tool besides the same read-only `get_lead_context`, and nothing in `PipelineAgent`, the route, or the Gateway ever calls `OpportunityService`, `TaskService`, `AppointmentService`, or any other write path. No contact, property, opportunity, task, or appointment is ever modified; no opportunity stage is ever changed; no message is ever sent. A human advisor reads the recommendation and decides.
+
+### Testing
+
+`tests/test_pipeline_agent.py` (32 tests) — same fully-offline `FakeLLMProvider` pattern as the other two agents' test files. Covers the schema (valid payload, nested `OpportunityRecommendation`/`ImmediateAction`/`RiskFlag` items, confidence boundaries, unknown `overall_priority`/`recommended_action`/`severity` rejection), the agent (no opportunities; one active opportunity; multiple opportunities together — both ids reach the prompt; a won opportunity; a lost opportunity; an active and a lost opportunity together — the lost one doesn't disappear; an opportunity with an overdue task; one with an upcoming appointment; negotiation stage; offer stage; a "stale" scenario — an old `created_at` with zero activity, verified as raw facts reaching the prompt rather than a precomputed "stale" label, since staleness is the model's own judgment call, never a hard-coded rule; 404 for a missing/cross-org contact with the LLM never called; organization isolation, including a belt-and-suspenders check that another organization's opportunity id never appears in the prompt; every `LLMError` subtype propagating, including `LLMProviderError`; and that running the agent never changes the analyzed opportunity's own `stage`), and the route (success, `503`/`504`/`502` for each failure mode, `404` cross-org, and that a run is actually persisted as an `AgentExecution`).
+
+`tests/test_pipeline_agent_ollama_integration.py` — the real-Ollama smoke test, gated exactly like the other two (`RUN_OLLAMA_INTEGRATION_TESTS=1` plus a live server). Runs Carlos/Gabriela/Carolina/Sergio and checks only the structural contract (valid enum values, every `confidence` — overall and per-item — in range) — never a hardcoded expected conclusion. See [Real Ollama validation results](#real-ollama-validation-results) below for an actual run's output.
+
+### Real Ollama validation results
+
+Captured by running `PipelineAgent` directly (not through the test suite) against a **fresh in-memory SQLite copy of the demo seed data** (`scripts/seed_demo_data.py`'s `run_seed`), with a genuinely local `llama3.2` served by `ollama serve` on this CPU-only dev machine — not a round-trip against the live Supabase project, and the real demo data was never touched. Each contact was run as its own isolated process so none competed with another for CPU; running two at once was tried first and measurably slowed both (see "Problems discovered" in the final report) — these numbers are the clean, uncontended baseline.
+
+| Contact | Duration | Schema valid | Overall priority | Opportunities | Risk flags | Immediate actions | Confidence |
+|---|---|---|---|---|---|---|---|
+| gabriela-ortiz | 224.9s | ✅ | medium | 2 (1 lost, 1 active search) | 0 | 0 | 0.7 |
+| carolina-reyes | 161.3s | ✅ | high | 1 (negotiation) | 0 | 0 | 0.95 |
+| carlos-mendoza | 232.8s | ✅ | medium | 1 (qualification, flagged "stale") | 1 (stale, medium severity) | 1 (follow_up, high urgency) | 0.85 |
+| sergio-navarro | 175.3s | ✅ | high | 1 (won, closed) | 0 | 0 | 0.85 |
+
+All four passed Pydantic validation against `PipelineAnalysis` on the first attempt — no retries, no manual correction. Qualitatively: Carlos's opportunity (no `expected_close_date`, an overdue task, 3 days since last activity) is the one the model flagged with both a risk (`stale`) and an immediate action (`follow_up`, `urgent`), which lines up with the raw signals in his context. Sergio's single opportunity is `won`/closed, and the model correctly recommended `monitor` rather than any sales action — a small but real confirmation that it's reading `stage`/`status` rather than pattern-matching "opportunity exists → recommend closing action." One rough edge worth flagging honestly: both Carolina's and Carlos's opportunities got `coordinate_notary` recommended — appropriate for Carolina (an active negotiation) but a stretch for Carlos (still in `qualification`, no offer yet) — the model's own stated `reason` for Carlos doesn't actually argue for that action, which is a real prompt-quality gap, not a schema or architecture problem; the field itself worked exactly as designed (free text you can audit against the recommendation).
+
 ## AI Gateway & Agent Registry
 
-With two agents now built the same way, the part that was starting to repeat itself — timing, logging, and provider/version bookkeeping duplicated in both `LeadIntelligenceAgent` and `FollowUpAgent` — moved into one small orchestration layer. This is *not* multi-agent orchestration or a message bus; it's a thin façade that makes the two agents manageable and measurable before a third (Sales Copilot) arrives.
+With three agents now built the same way, the part that was starting to repeat itself — timing, logging, and provider/version bookkeeping duplicated across each agent — moved into one small orchestration layer. This is *not* multi-agent orchestration or a message bus; it's a thin façade that makes the agents manageable and measurable.
 
 ```
 STATE AI
      ↓
  AI Gateway  (app/ai/gateway.py)
      ↓
- ┌───────────────────┬───────────────────┐
- Lead Intelligence      Follow-up          (looked up via app/ai/registry.py)
- └───────────────────┴───────────────────┘
+ ┌───────────────────┬───────────────────┬───────────────────┐
+ Lead Intelligence      Follow-up            Pipeline           (looked up via app/ai/registry.py)
+ └───────────────────┴───────────────────┴───────────────────┘
      ↓
  LLMProvider
      ↓
  Ollama / Anthropic
 ```
 
-**Agent Registry** (`app/ai/registry.py`) — a plain module-level dict, `AGENT_REGISTRY: dict[str, AgentDescriptor]`, not a plugin system or anything reflection-based. Each `AgentDescriptor` carries `agent_id`, `name`, `description`, `version` (the agent's own implementation version — new constants `LEAD_INTELLIGENCE_AGENT_VERSION`/`FOLLOW_UP_AGENT_VERSION`, both `"v1"` today, distinct from the prompt's own version), `prompt_version` (imported from each agent's own prompt module — `v2`/`v1` respectively, unchanged), `input_type`/`output_type` (the actual Pydantic classes — `LeadContext` in, `LeadIntelligenceResult`/`FollowUpResult` out), and a `run` callable that builds and calls that specific agent. `get_agent(agent_id)` and `list_agents()` are the only two functions anything needs. Adding a third agent later means adding one more `AgentDescriptor` entry here — nothing else changes.
+**Agent Registry** (`app/ai/registry.py`) — a plain module-level dict, `AGENT_REGISTRY: dict[str, AgentDescriptor]`, not a plugin system or anything reflection-based. Each `AgentDescriptor` carries `agent_id`, `name`, `description`, `version` (the agent's own implementation version — `LEAD_INTELLIGENCE_AGENT_VERSION`/`FOLLOW_UP_AGENT_VERSION`/`PIPELINE_AGENT_VERSION`, all `"v1"` today, distinct from the prompt's own version), `prompt_version` (imported from each agent's own prompt module, unchanged for the first two), `input_type`/`output_type` (the actual Pydantic classes — `LeadContext` in, `LeadIntelligenceResult`/`FollowUpResult`/`PipelineResult` out), and a `run` callable that builds and calls that specific agent. `get_agent(agent_id)` and `list_agents()` are the only two functions anything needs. Adding the Pipeline Agent meant adding exactly one more `AgentDescriptor` entry here — confirming the registry's own docstring claim ("adding a third agent... means adding one more `AgentDescriptor` entry here, never new machinery"): nothing else in the Gateway, the route helper, or `scripts/evaluate_agents.py` (already registry-driven — `--agents` defaults to every registered agent id) needed to change.
 
 **AI Gateway** (`app/ai/gateway.py`) — `AIGateway(db, llm).run(agent_id, current_user, contact_id)` looks up the descriptor, calls it, times the whole call, and returns a `GatewayExecution(result, metadata)`. `ExecutionMetadata` is a small frozen dataclass: `agent`, `agent_version`, `prompt_version`, `provider`, `model`, `duration_ms`, `success` — never the `LeadContext`, never a credential, nothing persisted anywhere — no AI-execution database table exists or is planned until the architecture settles; this metadata is logging/evaluation-only for now. A `404` from context authorization (unknown/cross-org contact) propagates straight through *before* the gateway starts timing anything — it's an authorization outcome, not an AI execution one, so it's never logged as a "failed" run. Any `LLMError` subclass *is* logged (`ai_gateway.failed agent=... provider=... model=... duration_ms=... error=...`) and re-raised untouched, so `app/api/routes/ai.py`'s existing `LLMTimeoutError`/`LLMInvalidOutputError`/`LLMProviderError` → HTTP status mapping needed no changes.
 
 **Agents got simpler, not more complex**: both `LeadIntelligenceAgent.analyze` and `FollowUpAgent.recommend` had their own `try/except LLMError` + `logger.warning`/`logger.info` + manual `time.monotonic()` timing removed — that's now the gateway's job, done once, uniformly, for every agent. Each agent is back to exactly its own reasoning: build the context, call `self.llm.generate_structured(...)`, shape the result. **The routes now go through the gateway** (`AIGateway(db, llm).run("lead_intelligence", ...)` / `.run("follow_up", ...)`) instead of instantiating an agent class directly — the route itself is unchanged in every other respect (same auth, same org-scoping, same error-to-HTTP-status mapping, same request/response shape). No provider selection logic moved: `_get_llm_provider`/`build_default_provider()` still decide *which* `LLMProvider` to hand the gateway, exactly as before (see [Lead Intelligence Agent's Provider selection](#provider-selection)) — the gateway only ever calls whatever `LLMProvider` it's given.
 
-**Tests** (`tests/test_ai_gateway.py`, 11 tests, fully offline): the registry (both agents present, correct descriptor fields, an unknown `agent_id` raises `KeyError`), the gateway's happy path for both agents (correct `GatewayExecution.result` type, correct metadata fields, metadata reflects whatever the *injected* provider identifies as — the gateway never decides this itself), every `LLMError` subtype propagating unmodified, a `caplog`-verified warning log on failure, a `caplog`-verified *absence* of any gateway log line when a `404` happens instead, and an unregistered `agent_id` raising before the LLM is ever called.
+**Tests** (`tests/test_ai_gateway.py`, 13 tests, fully offline): the registry (all three agents present, correct descriptor fields for Lead Intelligence and Pipeline, an unknown `agent_id` raises `KeyError`), the gateway's happy path for all three agents (correct `GatewayExecution.result` type, correct metadata fields, metadata reflects whatever the *injected* provider identifies as — the gateway never decides this itself), every `LLMError` subtype propagating unmodified, a `caplog`-verified warning log on failure, a `caplog`-verified *absence* of any gateway log line when a `404` happens instead, and an unregistered `agent_id` raising before the LLM is ever called.
 
 ## Agent Evaluation
 
@@ -566,7 +636,7 @@ Fully offline, no LLM involved — these assert only deterministic CRM facts abo
 A standalone script — **not** a pytest test, **never** run by `uv run pytest` — that runs real agents through the real, currently-configured provider (`build_default_provider()`, respecting `LLM_PROVIDER`/`OLLAMA_MODEL`/`ANTHROPIC_MODEL` exactly like the API does) against the demo contacts, through the same `AIGateway` the API uses. For each `(agent, contact)` pair it records `agent`, `contact`, `provider`, `model`, `agent_version`, `prompt_version`, `duration_ms`, `schema_valid`, and the full structured `output` — then prints it, and optionally writes the full set to a JSON file. It never declares an answer "correct": that judgment (or any deterministic fact-check) belongs in the golden tests above, kept intentionally separate from schema/execution validity here.
 
 ```bash
-uv run python scripts/evaluate_agents.py                                    # both agents x all four demo contacts
+uv run python scripts/evaluate_agents.py                                    # every registered agent x all four demo contacts
 uv run python scripts/evaluate_agents.py --agents lead_intelligence         # one agent
 uv run python scripts/evaluate_agents.py --contacts carlos-mendoza          # one contact
 uv run python scripts/evaluate_agents.py --output eval_results.json         # also save full results as JSON
@@ -588,9 +658,9 @@ Read-only from the API: `GET /audit-logs` (filterable by `entity_type`/`entity_i
 
 ## AI Execution Persistence
 
-The Lead Intelligence and Follow-up agents were read-only/advisory from day one — that doesn't change here. What was missing was any record of *what they said*: "what did the AI recommend for this lead, when, which agent, did it work, did anyone act on it." `agent_executions` (`app/models/agent_execution.py`) now answers that.
+Every agent (Lead Intelligence, Follow-up, and — added later — Pipeline) has been read-only/advisory from day one; that doesn't change here or with any of them. What was missing was any record of *what they said*: "what did the AI recommend for this lead, when, which agent, did it work, did anyone act on it." `agent_executions` (`app/models/agent_execution.py`) now answers that.
 
-**Deliberately NOT written from inside `AIGateway`**: the Gateway's own docstring states it "never touches the database or Supabase directly," and that stays true. Persistence happens in `app/api/routes/ai.py`'s `_run_and_record` helper — one function shared by both agent routes, called right around the existing `AIGateway(db, llm).run(...)` call, exactly the same layer that already owned mapping `LLMError` subclasses to HTTP status codes. A third agent route follows the same pattern by calling `_run_and_record`, not by re-copying the try/except.
+**Deliberately NOT written from inside `AIGateway`**: the Gateway's own docstring states it "never touches the database or Supabase directly," and that stays true. Persistence happens in `app/api/routes/ai.py`'s `_run_and_record` helper — one function shared by all three agent routes, called right around the existing `AIGateway(db, llm).run(...)` call, exactly the same layer that already owned mapping `LLMError` subclasses to HTTP status codes. When the Pipeline Agent was added later, its route called this same helper unchanged, exactly as this section originally predicted.
 
 - **Success** records `agent_name`, `agent_version`, `contact_id`, `user_id`, `provider`, `model`, `duration_ms` (from the Gateway's own `ExecutionMetadata` — already accurate, no extra timer needed), and `output` (the agent's full structured result, dumped as JSON).
 - **Failure** (`LLMTimeoutError`/`LLMInvalidOutputError`/`LLMProviderError`) still records a row — `status="failed"`, `output={"error": "<exception class>", "message": "..."}` — timed by the route itself since no `GatewayExecution` exists to read a duration from.
@@ -680,8 +750,10 @@ Never leaked to a client, under any of these paths: a stack trace, raw SQL, a fi
 
 ## What's next
 
-- A Pipeline-aware AI agent (a Pipeline Agent, or Sales Copilot, or an extension of Lead Intelligence) that actually *reasons about* Opportunities — deliberately not built in this task, which prepared the context (`LeadContext` now includes `opportunities`/`tasks`/`appointments` — see [AI Context Layer](#ai-context-layer)) without adding any new agent behavior. Built the same way Lead Intelligence and Follow-up were: on top of the existing `get_lead_context` tool and the `LLMProvider` abstraction, not a new pattern. The structured fields (`stage`, `probability`, `expected_value`, `expected_close_date`, `lost_reason`) already exist specifically so that agent doesn't have to parse free text. Once it or any agent needs to *write* CRM data (not just recommend), that's a further, separate decision — not something this task enables by itself.
-- Empirically evaluating whether Lead Intelligence/Follow-up's real (non-test) output quality changes now that they can see Opportunity/Task/Appointment data — `scripts/evaluate_agents.py` exists for exactly this; not run as part of this task, since it requires a real LLM call and this task's own scope was the context, not agent behavior.
+- Sales Copilot ("what should I work on today across my whole book of business", not one contact at a time) — deliberately not built yet. The Pipeline Agent (see [Pipeline Agent](#pipeline-agent)) answers "where does *this contact's* pipeline stand"; Sales Copilot would need to reason across *many* contacts' pipelines at once, which is a different context-assembly problem (today's `LeadContext`/`get_lead_context` are both scoped to one contact by design) — not a bigger prompt, a genuinely different tool. Built the same way the other three agents were once that's designed: on top of the same `LLMProvider` abstraction, not a new pattern.
+- Provider routing (e.g. routing specific agents to Anthropic while others stay on Ollama, or picking a provider per-request) — explicitly out of scope; `LLM_PROVIDER` remains one global setting for every agent.
+- Empirically evaluating whether Lead Intelligence/Follow-up's real (non-test) output quality changes now that they can see Opportunity/Task/Appointment data — `scripts/evaluate_agents.py` exists for exactly this (and already picked up the Pipeline Agent automatically, being registry-driven); running it as a deliberate before/after comparison for the other two agents wasn't part of this task's scope.
+- Cross-referencing the `opportunity_id`s a LLM returns in a `PipelineAnalysis` against the real ids it was actually given, and rejecting/flagging ones that don't match — today a syntactically-valid-but-wrong UUID (the model naming a real-looking id that isn't one of the contact's own opportunities) would pass Pydantic validation undetected. No agent in this codebase cross-validates returned ids against source data yet, so this wasn't added as a one-off just for Pipeline; worth revisiting if it's ever observed in practice — see [Pipeline Agent](#pipeline-agent) for whether real-Ollama validation runs happened to surface it.
 - Actually sending the Follow-up Agent's `suggested_message` (WhatsApp/email integration) — deliberately out of scope; today's agent only recommends, a human sends it.
 - Wiring the frontend to the Lead Intelligence, Follow-up, Tasks, Appointments, Notifications, and Opportunities endpoints (deliberately not done yet — backend-only so far).
 - A real production rollout decision for `LLM_PROVIDER` (Ollama is a local-dev choice, not a production one) — plus a third `LLMProvider` implementation (OpenAI/HuggingFace) if there's ever a real reason to compare providers beyond the two that already exist.

@@ -18,6 +18,7 @@ from app.models.contact import Contact
 from app.schemas.follow_up import FollowUpRecommendation, FollowUpResult
 from app.schemas.lead_context import LeadContext
 from app.schemas.lead_intelligence import LeadIntelligenceAnalysis, LeadIntelligenceResult
+from app.schemas.pipeline import PipelineAnalysis, PipelineResult
 from app.schemas.user import CurrentUser
 
 
@@ -58,6 +59,13 @@ def _valid_follow_up_recommendation() -> FollowUpRecommendation:
     )
 
 
+def _valid_pipeline_analysis() -> PipelineAnalysis:
+    return PipelineAnalysis(
+        overall_priority="medium", summary="One active opportunity, no immediate risks detected.",
+        opportunities=[], immediate_actions=[], risk_flags=[], confidence=0.7,
+    )
+
+
 def _make_contact(db_session: Session, organization_id, **overrides) -> Contact:
     fields = {"organization_id": organization_id, "first_name": "Luis", "last_name": "Cantu", "phone": "+52 81 5500 7777"}
     fields.update(overrides)
@@ -71,8 +79,8 @@ def _make_contact(db_session: Session, organization_id, **overrides) -> Contact:
 # --- Registry --------------------------------------------------------------------------------------
 
 
-def test_registry_contains_both_agents():
-    assert set(AGENT_REGISTRY) == {"lead_intelligence", "follow_up"}
+def test_registry_contains_all_three_agents():
+    assert set(AGENT_REGISTRY) == {"lead_intelligence", "follow_up", "pipeline"}
 
 
 def test_get_agent_returns_the_right_descriptor():
@@ -83,6 +91,16 @@ def test_get_agent_returns_the_right_descriptor():
     assert descriptor.version and descriptor.prompt_version
 
 
+def test_get_agent_returns_the_right_descriptor_for_pipeline():
+    from app.schemas.pipeline import PipelineResult
+
+    descriptor = get_agent("pipeline")
+    assert descriptor.agent_id == "pipeline"
+    assert descriptor.input_type is LeadContext
+    assert descriptor.output_type is PipelineResult
+    assert descriptor.version and descriptor.prompt_version
+
+
 def test_get_agent_raises_for_an_unknown_id():
     with pytest.raises(KeyError):
         get_agent("sales_copilot")
@@ -90,7 +108,7 @@ def test_get_agent_raises_for_an_unknown_id():
 
 def test_list_agents_returns_every_registered_agent():
     ids = {descriptor.agent_id for descriptor in list_agents()}
-    assert ids == {"lead_intelligence", "follow_up"}
+    assert ids == {"lead_intelligence", "follow_up", "pipeline"}
 
 
 # --- Gateway: happy path, metadata, error propagation -----------------------------------------------
@@ -122,6 +140,18 @@ def test_gateway_runs_follow_up_and_returns_metadata(db_session: Session, organi
 
     assert isinstance(execution.result, FollowUpResult)
     assert execution.metadata.agent == "follow_up"
+    assert execution.metadata.success is True
+
+
+def test_gateway_runs_pipeline_and_returns_metadata(db_session: Session, organization_id, current_user):
+    contact = _make_contact(db_session, organization_id)
+    fake = FakeLLMProvider(response=_valid_pipeline_analysis())
+
+    execution = AIGateway(db_session, fake).run("pipeline", current_user, contact.id)
+
+    assert isinstance(execution.result, PipelineResult)
+    assert execution.result.contact_id == contact.id
+    assert execution.metadata.agent == "pipeline"
     assert execution.metadata.success is True
 
 

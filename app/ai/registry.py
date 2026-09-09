@@ -20,11 +20,14 @@ from sqlalchemy.orm import Session
 from app.ai.follow_up_agent import FOLLOW_UP_AGENT_VERSION, FollowUpAgent
 from app.ai.lead_intelligence_agent import LEAD_INTELLIGENCE_AGENT_VERSION, LeadIntelligenceAgent
 from app.ai.llm.base import LLMProvider
+from app.ai.pipeline_agent import PIPELINE_AGENT_VERSION, PipelineAgent
 from app.ai.prompts.follow_up import FOLLOW_UP_PROMPT_VERSION
 from app.ai.prompts.lead_intelligence import LEAD_INTELLIGENCE_PROMPT_VERSION
+from app.ai.prompts.pipeline import PIPELINE_PROMPT_VERSION
 from app.schemas.follow_up import FollowUpResult
 from app.schemas.lead_context import LeadContext
 from app.schemas.lead_intelligence import LeadIntelligenceResult
+from app.schemas.pipeline import PipelineResult
 from app.schemas.user import CurrentUser
 
 # (db, llm, current_user, contact_id) -> the agent's own Result schema instance.
@@ -63,6 +66,16 @@ AGENT_REGISTRY: dict[str, AgentDescriptor] = {
         input_type=LeadContext,
         output_type=FollowUpResult,
         run=lambda db, llm, current_user, contact_id: FollowUpAgent(db, llm).recommend(current_user, contact_id),
+    ),
+    "pipeline": AgentDescriptor(
+        agent_id="pipeline",
+        name="Pipeline Agent",
+        description="Analyzes a contact's Opportunities and returns pipeline-level priority, risk flags, and recommended next actions.",
+        version=PIPELINE_AGENT_VERSION,
+        prompt_version=PIPELINE_PROMPT_VERSION,
+        input_type=LeadContext,
+        output_type=PipelineResult,
+        run=lambda db, llm, current_user, contact_id: PipelineAgent(db, llm).analyze(current_user, contact_id),
     ),
 }
 

@@ -16,6 +16,7 @@ from app.core.security import get_current_org_user
 from app.schemas.follow_up import FollowUpResult
 from app.schemas.lead_context import LeadContext
 from app.schemas.lead_intelligence import LeadIntelligenceResult
+from app.schemas.pipeline import PipelineResult
 from app.schemas.user import CurrentUser
 from app.services.agent_execution_service import AgentExecutionService
 
@@ -147,3 +148,24 @@ def recommend_follow_up(
     _run_and_record above.
     """
     return cast(FollowUpResult, _run_and_record("follow_up", current_user, contact_id, db, llm))
+
+
+@router.post("/pipeline/{contact_id}", response_model=PipelineResult)
+def analyze_pipeline(
+    contact_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_org_user),
+    db: Session = Depends(get_db),
+    llm: LLMProvider = Depends(_get_llm_provider),
+) -> PipelineResult:
+    """
+    Runs the Pipeline Agent through the AI Gateway (app/ai/gateway.py) for
+    one contact: builds its LeadContext, asks the configured LLM to analyze
+    every Opportunity in it, and returns validated pipeline-level priority,
+    risk flags, and recommended next actions. Read-only — this never
+    modifies any CRM data (no contact/property/opportunity/task/appointment
+    is ever changed, no message is ever sent, no opportunity stage is ever
+    changed) — a human advisor decides whether to act on it. Every run
+    (success or failure) is persisted as an AgentExecution — see
+    _run_and_record above.
+    """
+    return cast(PipelineResult, _run_and_record("pipeline", current_user, contact_id, db, llm))
