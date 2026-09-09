@@ -14,7 +14,9 @@ from app.core.config import settings
 
 def build_default_provider() -> LLMProvider:
     if settings.llm_provider == "ollama":
-        return OllamaProvider(base_url=settings.ollama_base_url, model=settings.ollama_model)
+        return OllamaProvider(
+            base_url=settings.ollama_base_url, model=settings.ollama_model, timeout=settings.ollama_timeout_seconds
+        )
 
     if settings.llm_provider == "anthropic":
         if not settings.anthropic_api_key:

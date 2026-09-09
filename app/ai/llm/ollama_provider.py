@@ -36,6 +36,11 @@ class OllamaProvider(LLMProvider):
     def model_name(self) -> str:
         return self._model
 
+    @property
+    def timeout(self) -> float:
+        """The configured per-request timeout, in seconds — for introspection/tests, not used by any agent."""
+        return self._timeout
+
     def generate_structured(
         self, *, system_prompt: str, user_prompt: str, response_model: type[ResponseModelT], max_tokens: int = 1024
     ) -> ResponseModelT:

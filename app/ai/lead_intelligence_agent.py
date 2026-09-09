@@ -12,10 +12,13 @@ Read-only and provider-agnostic by construction: this agent depends on
 LLMProvider (app/ai/llm/base.py), never on a specific vendor SDK, and it has
 no way to send a message, modify a contact, or create an activity — it only
 returns an analysis for a human advisor to act on.
+
+Kept deliberately thin — timing, logging, and provider/version bookkeeping
+now live one layer up in app/ai/gateway.py, so this class only holds this
+agent's own reasoning: build the context, ask the model, shape the result.
+app/ai/registry.py is what makes this agent reachable through the gateway.
 """
 
-import logging
-import time
 import uuid
 from datetime import datetime, timezone
 
@@ -23,13 +26,17 @@ from sqlalchemy.orm import Session
 
 from app.ai.lead_context_tool import get_lead_context
 from app.ai.llm.base import LLMProvider
-from app.ai.llm.errors import LLMError
 from app.ai.prompts.lead_intelligence import LEAD_INTELLIGENCE_PROMPT_VERSION, LEAD_INTELLIGENCE_SYSTEM_PROMPT
 from app.schemas.lead_context import LeadContext
 from app.schemas.lead_intelligence import LeadIntelligenceAnalysis, LeadIntelligenceResult
 from app.schemas.user import CurrentUser
 
-logger = logging.getLogger("app.ai.lead_intelligence")
+# This agent's own implementation/behavior version — distinct from
+# LEAD_INTELLIGENCE_PROMPT_VERSION (the prompt text's own version). Bump
+# this if the agent's logic or output schema changes in a way that matters
+# for comparing runs, independent of prompt wording changes. See
+# app/ai/registry.py, where both are recorded together as execution metadata.
+LEAD_INTELLIGENCE_AGENT_VERSION = "v1"
 
 _MAX_TOKENS = 1024
 
@@ -45,30 +52,13 @@ class LeadIntelligenceAgent:
         # enforced here before the LLM is ever called.
         context = get_lead_context(current_user, contact_id, self.db)
 
-        started = time.monotonic()
-        try:
-            analysis = self.llm.generate_structured(
-                system_prompt=LEAD_INTELLIGENCE_SYSTEM_PROMPT,
-                user_prompt=self._build_user_prompt(context),
-                response_model=LeadIntelligenceAnalysis,
-                max_tokens=_MAX_TOKENS,
-            )
-        except LLMError as exc:
-            # The exception's own message carries the actionable, provider-
-            # specific detail (e.g. "Is Ollama running?", "pull it first
-            # with...") — logged here so a developer sees it locally. Never
-            # sent to the API client: the route only ever returns a generic
-            # message for every LLMError subclass (see app/api/routes/ai.py).
-            logger.warning(
-                "lead_intelligence_agent.failed contact_id=%s organization_id=%s provider=%s model=%s error=%s",
-                contact_id, current_user.organization_id, self.llm.provider_name, self.llm.model_name, exc,
-            )
-            raise
-
-        latency_ms = int((time.monotonic() - started) * 1000)
-        logger.info(
-            "lead_intelligence_agent.analyzed contact_id=%s organization_id=%s provider=%s model=%s priority=%s latency_ms=%d",
-            contact_id, current_user.organization_id, self.llm.provider_name, self.llm.model_name, analysis.priority, latency_ms,
+        # Any LLMError subclass propagates untouched — app/ai/gateway.py is
+        # the one place that catches, times, and logs it.
+        analysis = self.llm.generate_structured(
+            system_prompt=LEAD_INTELLIGENCE_SYSTEM_PROMPT,
+            user_prompt=self._build_user_prompt(context),
+            response_model=LeadIntelligenceAnalysis,
+            max_tokens=_MAX_TOKENS,
         )
 
         return LeadIntelligenceResult(

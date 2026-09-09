@@ -1,11 +1,11 @@
 import uuid
+from typing import cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from app.ai.follow_up_agent import FollowUpAgent
+from app.ai.gateway import AIGateway
 from app.ai.lead_context_tool import get_lead_context
-from app.ai.lead_intelligence_agent import LeadIntelligenceAgent
 from app.ai.llm.base import LLMProvider
 from app.ai.llm.errors import LLMConfigError, LLMInvalidOutputError, LLMProviderError, LLMTimeoutError
 from app.ai.llm.factory import build_default_provider
@@ -58,20 +58,23 @@ def analyze_lead(
     llm: LLMProvider = Depends(_get_llm_provider),
 ) -> LeadIntelligenceResult:
     """
-    Runs the Lead Intelligence Agent (app/ai/lead_intelligence_agent.py) for
-    one contact: builds its LeadContext, asks the configured LLM to analyze
-    it, and returns the validated structured result. Read-only — this never
-    modifies any CRM data and never contacts the lead.
+    Runs the Lead Intelligence Agent through the AI Gateway
+    (app/ai/gateway.py) for one contact: builds its LeadContext, asks the
+    configured LLM to analyze it, and returns the validated structured
+    result. Read-only — this never modifies any CRM data and never contacts
+    the lead. This route owns authentication, organization authorization
+    (via get_current_org_user), and mapping LLM failures to HTTP status
+    codes; the gateway owns agent lookup, invocation, and execution metadata.
     """
-    agent = LeadIntelligenceAgent(db, llm)
     try:
-        return agent.analyze(current_user, contact_id)
+        execution = AIGateway(db, llm).run("lead_intelligence", current_user, contact_id)
     except LLMTimeoutError as exc:
         raise HTTPException(status.HTTP_504_GATEWAY_TIMEOUT, "The AI analysis service timed out.") from exc
     except LLMInvalidOutputError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "The AI analysis service returned an unexpected response.") from exc
     except LLMProviderError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "The AI analysis service is currently unavailable.") from exc
+    return cast(LeadIntelligenceResult, execution.result)
 
 
 @router.post("/follow-up/{contact_id}", response_model=FollowUpResult)
@@ -82,19 +85,19 @@ def recommend_follow_up(
     llm: LLMProvider = Depends(_get_llm_provider),
 ) -> FollowUpResult:
     """
-    Runs the Follow-up Agent (app/ai/follow_up_agent.py) for one contact:
-    builds its LeadContext, asks the configured LLM whether this lead needs
-    follow-up right now and through which channel, and returns the
-    validated structured recommendation. Read-only and advisory only — this
-    never modifies any CRM data, sends any message, or creates any
-    appointment; a human advisor decides whether to act on it.
+    Runs the Follow-up Agent through the AI Gateway (app/ai/gateway.py) for
+    one contact: builds its LeadContext, asks the configured LLM whether
+    this lead needs follow-up right now and through which channel, and
+    returns the validated structured recommendation. Read-only and advisory
+    only — this never modifies any CRM data, sends any message, or creates
+    any appointment; a human advisor decides whether to act on it.
     """
-    agent = FollowUpAgent(db, llm)
     try:
-        return agent.recommend(current_user, contact_id)
+        execution = AIGateway(db, llm).run("follow_up", current_user, contact_id)
     except LLMTimeoutError as exc:
         raise HTTPException(status.HTTP_504_GATEWAY_TIMEOUT, "The AI analysis service timed out.") from exc
     except LLMInvalidOutputError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "The AI analysis service returned an unexpected response.") from exc
     except LLMProviderError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "The AI analysis service is currently unavailable.") from exc
+    return cast(FollowUpResult, execution.result)

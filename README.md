@@ -321,6 +321,7 @@ Add to your `.env` (see `.env.example`):
 LLM_PROVIDER=ollama
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=llama3.2
+OLLAMA_TIMEOUT_SECONDS=180  # measured, not guessed — see the note below
 
 # Production option — only read when LLM_PROVIDER=anthropic.
 ANTHROPIC_API_KEY=sk-ant-...    # from https://console.anthropic.com/settings/keys
@@ -328,6 +329,8 @@ ANTHROPIC_MODEL=claude-sonnet-5 # optional, this is already the default
 ```
 
 Every other endpoint in this backend works regardless of any of this. With `LLM_PROVIDER=ollama` (the default), `ANTHROPIC_API_KEY` isn't needed at all.
+
+**`OLLAMA_TIMEOUT_SECONDS` exists because of a real bug found through measurement, not guesswork**: `OllamaProvider`'s own class default is 60s, and `build_default_provider()` didn't override it for a while — on this project's actual CPU-only development hardware (see [Agent Evaluation](#agent-evaluation)'s performance numbers), every real request through `/ai/lead-intelligence` or `/ai/follow-up` was silently failing with `LLMTimeoutError` after 60 seconds, well before the model was done. `settings.ollama_timeout_seconds` (default `180`) is now wired through the factory and covered by a regression test (`test_ollama_provider_uses_the_configured_timeout_not_the_class_default` in `tests/test_llm_provider_selection.py`).
 
 ### Running Ollama locally
 
@@ -437,6 +440,55 @@ Same guarantee as Lead Intelligence, worth restating because this agent's whole 
 `tests/test_follow_up_agent.py` (26 tests) — same fully-offline `FakeLLMProvider` pattern as Lead Intelligence's test file. Covers the schema (valid payload, null message on no-follow-up, confidence boundaries and out-of-range/percentage rejection, unknown channel/action/priority rejection), the agent (an active buyer with a stale contact; a recently-contacted lead needing no follow-up; the prompt carrying `direction` and `days_since_last_activity` rather than a precomputed verdict; Gabriela's rejected-interest-plus-new-requirement pattern reaching the prompt together; recent multi-activity engagement reflected in `activity_count`; a brand-new contact with no history still producing a valid context; 404 for a missing or cross-org contact with the LLM never called; every `LLMError` subtype propagating; and that no `Contact`/`Activity`/`BuyerRequirement` row is created, changed, or removed by running the agent), and the route (success, `503`/`504`/`502` for each failure mode, `404` cross-org).
 
 `tests/test_follow_up_agent_ollama_integration.py` — the real-Ollama smoke test, gated the same way as Lead Intelligence's (`RUN_OLLAMA_INTEGRATION_TESTS=1` plus a live server; see that section above for why reachability alone isn't enough). Runs Carlos/Gabriela/Carolina/Sergio and checks only the structural contract (valid enum values, `confidence` in range, `recommended_channel="none"` whenever `should_follow_up` is false) — never a hardcoded expected conclusion.
+
+## AI Gateway & Agent Registry
+
+With two agents now built the same way, the part that was starting to repeat itself — timing, logging, and provider/version bookkeeping duplicated in both `LeadIntelligenceAgent` and `FollowUpAgent` — moved into one small orchestration layer. This is *not* multi-agent orchestration or a message bus; it's a thin façade that makes the two agents manageable and measurable before a third (Sales Copilot) arrives.
+
+```
+STATE AI
+     ↓
+ AI Gateway  (app/ai/gateway.py)
+     ↓
+ ┌───────────────────┬───────────────────┐
+ Lead Intelligence      Follow-up          (looked up via app/ai/registry.py)
+ └───────────────────┴───────────────────┘
+     ↓
+ LLMProvider
+     ↓
+ Ollama / Anthropic
+```
+
+**Agent Registry** (`app/ai/registry.py`) — a plain module-level dict, `AGENT_REGISTRY: dict[str, AgentDescriptor]`, not a plugin system or anything reflection-based. Each `AgentDescriptor` carries `agent_id`, `name`, `description`, `version` (the agent's own implementation version — new constants `LEAD_INTELLIGENCE_AGENT_VERSION`/`FOLLOW_UP_AGENT_VERSION`, both `"v1"` today, distinct from the prompt's own version), `prompt_version` (imported from each agent's own prompt module — `v2`/`v1` respectively, unchanged), `input_type`/`output_type` (the actual Pydantic classes — `LeadContext` in, `LeadIntelligenceResult`/`FollowUpResult` out), and a `run` callable that builds and calls that specific agent. `get_agent(agent_id)` and `list_agents()` are the only two functions anything needs. Adding a third agent later means adding one more `AgentDescriptor` entry here — nothing else changes.
+
+**AI Gateway** (`app/ai/gateway.py`) — `AIGateway(db, llm).run(agent_id, current_user, contact_id)` looks up the descriptor, calls it, times the whole call, and returns a `GatewayExecution(result, metadata)`. `ExecutionMetadata` is a small frozen dataclass: `agent`, `agent_version`, `prompt_version`, `provider`, `model`, `duration_ms`, `success` — never the `LeadContext`, never a credential, nothing persisted anywhere — no AI-execution database table exists or is planned until the architecture settles; this metadata is logging/evaluation-only for now. A `404` from context authorization (unknown/cross-org contact) propagates straight through *before* the gateway starts timing anything — it's an authorization outcome, not an AI execution one, so it's never logged as a "failed" run. Any `LLMError` subclass *is* logged (`ai_gateway.failed agent=... provider=... model=... duration_ms=... error=...`) and re-raised untouched, so `app/api/routes/ai.py`'s existing `LLMTimeoutError`/`LLMInvalidOutputError`/`LLMProviderError` → HTTP status mapping needed no changes.
+
+**Agents got simpler, not more complex**: both `LeadIntelligenceAgent.analyze` and `FollowUpAgent.recommend` had their own `try/except LLMError` + `logger.warning`/`logger.info` + manual `time.monotonic()` timing removed — that's now the gateway's job, done once, uniformly, for every agent. Each agent is back to exactly its own reasoning: build the context, call `self.llm.generate_structured(...)`, shape the result. **The routes now go through the gateway** (`AIGateway(db, llm).run("lead_intelligence", ...)` / `.run("follow_up", ...)`) instead of instantiating an agent class directly — the route itself is unchanged in every other respect (same auth, same org-scoping, same error-to-HTTP-status mapping, same request/response shape). No provider selection logic moved: `_get_llm_provider`/`build_default_provider()` still decide *which* `LLMProvider` to hand the gateway, exactly as before (see [Lead Intelligence Agent's Provider selection](#provider-selection)) — the gateway only ever calls whatever `LLMProvider` it's given.
+
+**Tests** (`tests/test_ai_gateway.py`, 11 tests, fully offline): the registry (both agents present, correct descriptor fields, an unknown `agent_id` raises `KeyError`), the gateway's happy path for both agents (correct `GatewayExecution.result` type, correct metadata fields, metadata reflects whatever the *injected* provider identifies as — the gateway never decides this itself), every `LLMError` subtype propagating unmodified, a `caplog`-verified warning log on failure, a `caplog`-verified *absence* of any gateway log line when a `404` happens instead, and an unregistered `agent_id` raising before the LLM is ever called.
+
+## Agent Evaluation
+
+Comparing prompts, models, and providers needs a way to run the agents against known contacts and see what comes back — without ever pretending an AI's judgment call can be graded "correct" by code. Two separate pieces, kept deliberately apart:
+
+### Golden test cases (`tests/test_golden_contacts.py`)
+
+Fully offline, no LLM involved — these assert only deterministic CRM facts about Carlos, Gabriela, Carolina, and Sergio, built straight from `LeadContextService` (the exact same data an agent's prompt is built from): Carlos has an active buyer requirement and recent activity; Gabriela's rejected property interest *and* her later active buyer requirement are both still present and correctly ordered (the transition this whole context layer exists to preserve); Carolina has a `negotiation`-status property interest and a `negotiation` activity; Sergio's old (`cancelled`) and new (`active`) buyer requirements are both visible. If a future change to the seed data, `LeadContextService`, or the `LeadContext` schema ever silently dropped one of these facts, this file catches it in the normal fast offline suite — *before* it could show up as a hallucination or context-loss bug in a real agent run. This file makes no claim at all about what an LLM should conclude from these facts.
+
+### Real-model evaluation (`scripts/evaluate_agents.py`)
+
+A standalone script — **not** a pytest test, **never** run by `uv run pytest` — that runs real agents through the real, currently-configured provider (`build_default_provider()`, respecting `LLM_PROVIDER`/`OLLAMA_MODEL`/`ANTHROPIC_MODEL` exactly like the API does) against the demo contacts, through the same `AIGateway` the API uses. For each `(agent, contact)` pair it records `agent`, `contact`, `provider`, `model`, `agent_version`, `prompt_version`, `duration_ms`, `schema_valid`, and the full structured `output` — then prints it, and optionally writes the full set to a JSON file. It never declares an answer "correct": that judgment (or any deterministic fact-check) belongs in the golden tests above, kept intentionally separate from schema/execution validity here.
+
+```bash
+uv run python scripts/evaluate_agents.py                                    # both agents x all four demo contacts
+uv run python scripts/evaluate_agents.py --agents lead_intelligence         # one agent
+uv run python scripts/evaluate_agents.py --contacts carlos-mendoza          # one contact
+uv run python scripts/evaluate_agents.py --output eval_results.json         # also save full results as JSON
+```
+
+Comparing across models/providers today means re-running this after changing `OLLAMA_MODEL` (or `LLM_PROVIDER`/`ANTHROPIC_MODEL`) and comparing the two output files — there is no automatic comparison or scoring built in, on purpose — the goal is to gather real data before making an infrastructure decision, not to pre-judge one.
+
+**Performance, measured, not assumed** (CPU-only Intel Core i7-1065G7, ~12 GB RAM, no GPU): with `llama3.2` (3B), each `(agent, contact)` run took roughly **2-2.5 minutes**, occasionally longer for a contact with a larger context (Carlos's Follow-up run needed a 240s ceiling instead of 180s during real testing — see that test file's comment). Both agents together against all four demo contacts is a **~20-25 minute** sweep. `llama3.1` (8B) was tried first and was markedly worse on this hardware — several minutes per call, sometimes exceeding a 300s timeout outright — which is why `llama3.2` is the current default (see [Model configuration](#model-configuration)). This is real, measured data point toward a future decision (GPU infrastructure, a different local model, or routing specific agents to Anthropic) — no such decision has been made yet.
 
 ## Security considerations
 

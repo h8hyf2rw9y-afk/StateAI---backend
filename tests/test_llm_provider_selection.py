@@ -34,6 +34,22 @@ def test_ollama_provider_uses_the_configured_base_url_and_model(monkeypatch):
     assert provider.model_name == "some-other-model"
 
 
+def test_ollama_provider_uses_the_configured_timeout_not_the_class_default(monkeypatch):
+    """
+    Regression test: build_default_provider() must pass settings.ollama_timeout_seconds
+    through — OllamaProvider's own class default (60s) is far too short for
+    real CPU-only inference (measured at 2-3+ minutes per call), and was
+    silently causing every real request to fail with LLMTimeoutError before
+    this was wired up.
+    """
+    monkeypatch.setattr(settings, "llm_provider", "ollama")
+    monkeypatch.setattr(settings, "ollama_timeout_seconds", 180.0)
+
+    provider = build_default_provider()
+
+    assert provider.timeout == 180.0
+
+
 def test_anthropic_provider_selected_without_a_key_raises_llm_config_error(monkeypatch):
     monkeypatch.setattr(settings, "llm_provider", "anthropic")
     monkeypatch.setattr(settings, "anthropic_api_key", None)

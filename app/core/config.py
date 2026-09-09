@@ -51,6 +51,16 @@ class Settings(BaseSettings):
     # if you have GPU acceleration and want the extra reasoning quality.
     ollama_model: str = "llama3.2"
 
+    # How long to wait for a single Ollama response before raising
+    # LLMTimeoutError. Real measurement on CPU-only hardware (Intel Core
+    # i7-1065G7, ~12 GB RAM, no GPU) showed individual agent calls routinely
+    # taking 2-3+ minutes with llama3.2, occasionally more for a contact
+    # with a larger context — OllamaProvider's own class default (60s) is
+    # far too short for that and was silently causing every real request to
+    # fail with a timeout until this was measured. Raise this further (or
+    # lower it, on faster/GPU hardware) via the environment, never in code.
+    ollama_timeout_seconds: float = 180.0
+
     # The Lead Intelligence Agent's production LLM provider — see
     # app/ai/llm/anthropic_provider.py. `None` (the default) means Anthropic
     # is unconfigured: only a problem if llm_provider="anthropic", in which
