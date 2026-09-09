@@ -80,6 +80,20 @@ PreapprovalStatus = Literal["not_started", "in_process", "preapproved", "approve
 FEATURE_CLASSIFICATIONS: tuple[str, ...] = ("must_have", "preferred", "deal_breaker")
 FeatureClassification = Literal["must_have", "preferred", "deal_breaker"]
 
+# app/models/feature.py's Feature.category — the catalog's own grouping,
+# distinct from FeatureClassification above (which is how one specific
+# buyer requirement rates a feature: must_have/preferred/deal_breaker).
+FEATURE_CATEGORIES: tuple[str, ...] = (
+    "interior",
+    "exterior",
+    "amenity",
+    "security",
+    "location",
+    "accessibility",
+    "other",
+)
+FeatureCategory = Literal["interior", "exterior", "amenity", "security", "location", "accessibility", "other"]
+
 PROPERTY_INTEREST_STATUSES: tuple[str, ...] = (
     "new",
     "contacted",

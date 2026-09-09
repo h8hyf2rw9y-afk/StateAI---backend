@@ -72,6 +72,33 @@ def add_buyer_requirement_feature(
     return BuyerRequirementService(db).add_feature(current_user.organization_id, requirement_id, data)
 
 
+@router.delete("/{requirement_id}/locations/{location_id}", response_model=BuyerRequirementRead)
+def remove_buyer_requirement_location(
+    requirement_id: uuid.UUID,
+    location_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_org_user),
+    db: Session = Depends(get_db),
+) -> BuyerRequirementRead:
+    """Removes one location from this requirement (never the requirement itself). A
+    location_id that doesn't belong to this requirement — including one belonging to
+    another organization's requirement — is a no-op, same as remove_buyer_requirement_feature
+    below and app/api/routes/contacts.py's remove_contact_role."""
+    return BuyerRequirementService(db).remove_location(current_user.organization_id, requirement_id, location_id)
+
+
+@router.delete("/{requirement_id}/features/{feature_key}", response_model=BuyerRequirementRead)
+def remove_buyer_requirement_feature(
+    requirement_id: uuid.UUID,
+    feature_key: str,
+    current_user: CurrentUser = Depends(get_current_org_user),
+    db: Session = Depends(get_db),
+) -> BuyerRequirementRead:
+    """Deletes the buyer_requirement_features relationship row only — the global
+    Feature catalog row (app/models/feature.py) is never touched. Mirrors
+    app/api/routes/properties.py's remove_property_feature."""
+    return BuyerRequirementService(db).remove_feature(current_user.organization_id, requirement_id, feature_key)
+
+
 @router.get("/{requirement_id}/matches", response_model=list[PropertyMatchRead])
 def get_buyer_requirement_matches(
     requirement_id: uuid.UUID,

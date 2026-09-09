@@ -1,7 +1,7 @@
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, Numeric, SmallInteger, UniqueConstraint
+from sqlalchemy import CheckConstraint, ForeignKey, Index, Numeric, SmallInteger, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, CreatedAtMixin, TimestampMixin, UUIDPKMixin
@@ -100,6 +100,19 @@ class BuyerRequirementLocation(Base, UUIDPKMixin, CreatedAtMixin):
         ),
         Index("ix_buyer_requirement_locations_requirement_id", "buyer_requirement_id"),
         Index("ix_buyer_requirement_locations_city_neighborhood", "city", "neighborhood"),
+        # Duplicate-protection for the same (requirement, city, state, neighborhood) tuple.
+        # A plain UniqueConstraint won't do here: Postgres treats NULL as never-equal-to-
+        # NULL, so most rows here (which leave one or two of these columns NULL) would
+        # never collide under a normal constraint. COALESCE-ing each column to '' first
+        # makes NULL compare equal to NULL, so a real duplicate is actually caught.
+        Index(
+            "uq_buyer_requirement_locations_requirement_place",
+            "buyer_requirement_id",
+            text("COALESCE(city, '')"),
+            text("COALESCE(state, '')"),
+            text("COALESCE(neighborhood, '')"),
+            unique=True,
+        ),
     )
 
 

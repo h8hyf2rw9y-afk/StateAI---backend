@@ -93,3 +93,26 @@ class BuyerRequirementService:
         self.db.commit()
         self.db.refresh(requirement)
         return requirement
+
+    def remove_location(
+        self, organization_id: uuid.UUID, requirement_id: uuid.UUID, location_id: uuid.UUID
+    ) -> BuyerRequirement:
+        """get_or_404 is the tenant-isolation boundary: a requirement_id from another
+        organization 404s here before we ever touch its locations, and location_id is
+        only ever matched within *this* (already org-verified) requirement's own
+        collection — see BuyerRequirementRepository.remove_location."""
+        requirement = self.get_or_404(organization_id, requirement_id)
+        self.repo.remove_location(requirement, location_id)
+        self.db.commit()
+        self.db.refresh(requirement)
+        return requirement
+
+    def remove_feature(
+        self, organization_id: uuid.UUID, requirement_id: uuid.UUID, feature_key: str
+    ) -> BuyerRequirement:
+        """Removes only the buyer_requirement_features relationship row, not the global Feature catalog row."""
+        requirement = self.get_or_404(organization_id, requirement_id)
+        self.repo.remove_feature(requirement, feature_key)
+        self.db.commit()
+        self.db.refresh(requirement)
+        return requirement

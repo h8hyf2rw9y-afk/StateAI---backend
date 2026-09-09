@@ -203,9 +203,10 @@ All endpoints below live under `/api/v1` and require `Authorization: Bearer <sup
 | GET | `/properties/{id}/activities` | Most-recent-first. |
 | GET | `/buyer-requirements` | |
 | GET, PATCH, DELETE | `/buyer-requirements/{id}` | |
-| POST | `/buyer-requirements/{id}/locations` | Add a preferred area. |
-| POST | `/buyer-requirements/{id}/features` | Tag a must-have/preferred/deal-breaker feature. |
+| POST, DELETE | `/buyer-requirements/{id}/locations[/{location_id}]` | Add / remove a preferred area — never deletes the requirement itself. |
+| POST, DELETE | `/buyer-requirements/{id}/features[/{feature_key}]` | Tag / untag a must-have/preferred/deal-breaker feature — removes the relationship only, never the global feature catalog row. |
 | **GET** | **`/buyer-requirements/{id}/matches`** | **Use Case 5** — deterministic candidate properties (see below). |
+| GET | `/features` | The global feature catalog (`app/models/feature.py`) — `?active=false` includes inactive features too. Defaults to active-only. |
 | GET, PATCH, DELETE | `/property-interests/{id}` | |
 | GET | `/activities/{id}` | |
 | GET | `/ai/lead-context/{contact_id}` | Internal/debug surface for the AI Context Layer — see [AI Context Layer](#ai-context-layer). |
