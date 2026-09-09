@@ -10,7 +10,8 @@ from app.models.activity import Activity
 from app.repositories.activity_repo import ActivityRepository
 from app.repositories.contact_repo import ContactRepository
 from app.repositories.property_repo import PropertyRepository
-from app.schemas.activity import ActivityCreate
+from app.schemas.activity import ActivityCreate, ActivityRead
+from app.services.audit_service import AuditService
 
 
 class ActivityService:
@@ -19,6 +20,7 @@ class ActivityService:
         self.repo = ActivityRepository(db)
         self.contact_repo = ContactRepository(db)
         self.property_repo = PropertyRepository(db)
+        self.audit = AuditService(db)
 
     def get_or_404(self, organization_id: uuid.UUID, activity_id: uuid.UUID) -> Activity:
         activity = self.repo.get(organization_id, activity_id)
@@ -43,6 +45,15 @@ class ActivityService:
             contact_id=contact_id,
             created_by_user_id=created_by_user_id,
             **data.model_dump(),
+        )
+        after = ActivityRead.model_validate(activity).model_dump(mode="json")
+        self.audit.record(
+            organization_id=organization_id,
+            actor_user_id=created_by_user_id,
+            entity_type="activity",
+            entity_id=activity.id,
+            action="ACTIVITY_CREATED",
+            after=after,
         )
         self.db.commit()
         self.db.refresh(activity)

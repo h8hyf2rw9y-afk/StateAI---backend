@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.security import get_current_org_user
+from app.core.security import get_current_org_user, require_role
 from app.schemas.buyer_requirement import BuyerRequirementRead, BuyerRequirementUpdate, FeatureAssign, LocationCreate
 from app.schemas.matching import PropertyMatchRead
 from app.schemas.user import CurrentUser
@@ -40,16 +40,20 @@ def update_buyer_requirement(
     current_user: CurrentUser = Depends(get_current_org_user),
     db: Session = Depends(get_db),
 ) -> BuyerRequirementRead:
-    return BuyerRequirementService(db).update(current_user.organization_id, requirement_id, data)
+    return BuyerRequirementService(db).update(
+        current_user.organization_id, requirement_id, data, actor_user_id=current_user.id
+    )
 
 
-@router.delete("/{requirement_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{requirement_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_role("owner", "admin"))]
+)
 def delete_buyer_requirement(
     requirement_id: uuid.UUID,
     current_user: CurrentUser = Depends(get_current_org_user),
     db: Session = Depends(get_db),
 ) -> None:
-    BuyerRequirementService(db).delete(current_user.organization_id, requirement_id)
+    BuyerRequirementService(db).delete(current_user.organization_id, requirement_id, actor_user_id=current_user.id)
 
 
 @router.post("/{requirement_id}/locations", response_model=BuyerRequirementRead)

@@ -10,7 +10,9 @@ import uuid
 from fastapi.testclient import TestClient
 
 from app.core.database import get_db
+from app.core.security import get_current_org_user
 from app.main import app
+from app.schemas.user import CurrentUser
 
 
 def test_create_and_get_contact(client: TestClient):
@@ -64,15 +66,38 @@ def test_assign_and_remove_contact_role(client: TestClient):
     assert removed.json()["roles"] == []
 
 
-def test_delete_contact(client: TestClient):
+def test_delete_contact(client: TestClient, current_user: CurrentUser):
     created = client.post(
         "/api/v1/contacts", json={"first_name": "Juan", "last_name": "Perez", "phone": "+52 811 000 0000"}
     ).json()
 
-    deleted = client.delete(f"/api/v1/contacts/{created['id']}")
+    # Deleting a contact is a destructive operation restricted to owner/admin
+    # (see require_role in app/core/security.py and README's Authorization
+    # Model) — the shared `client`/`current_user` fixtures default to
+    # "agent", so this test acts as an owner for the delete call itself.
+    # test_delete_contact_is_forbidden_for_an_agent below covers the denial.
+    owner = current_user.model_copy(update={"role": "owner"})
+    app.dependency_overrides[get_current_org_user] = lambda: owner
+    try:
+        deleted = client.delete(f"/api/v1/contacts/{created['id']}")
+    finally:
+        app.dependency_overrides[get_current_org_user] = lambda: current_user
     assert deleted.status_code == 204
 
     assert client.get(f"/api/v1/contacts/{created['id']}").status_code == 404
+
+
+def test_delete_contact_is_forbidden_for_an_agent(client: TestClient):
+    """Contact deletion requires owner/admin — the default `client` fixture's role ("agent") must be denied."""
+    created = client.post(
+        "/api/v1/contacts", json={"first_name": "Juan", "last_name": "Perez", "phone": "+52 811 000 0000"}
+    ).json()
+
+    response = client.delete(f"/api/v1/contacts/{created['id']}")
+    assert response.status_code == 403
+
+    # Untouched — the denied delete must not have gone through.
+    assert client.get(f"/api/v1/contacts/{created['id']}").status_code == 200
 
 
 def test_list_contacts_is_scoped_and_paginated(client: TestClient):

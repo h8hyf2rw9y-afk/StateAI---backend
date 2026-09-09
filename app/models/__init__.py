@@ -17,6 +17,12 @@ from app.models.buyer_requirement import (  # noqa: F401
 )
 from app.models.property_interest import PropertyInterest  # noqa: F401
 from app.models.activity import Activity  # noqa: F401
+from app.models.audit_log import AuditLog  # noqa: F401
+from app.models.agent_execution import AgentExecution  # noqa: F401
+from app.models.task import Task  # noqa: F401
+from app.models.appointment import Appointment  # noqa: F401
+from app.models.calendar_connection import CalendarConnection  # noqa: F401
+from app.models.notification import Notification  # noqa: F401
 
 __all__ = [
     "Base",
@@ -34,4 +40,10 @@ __all__ = [
     "BuyerRequirementFeature",
     "PropertyInterest",
     "Activity",
+    "AuditLog",
+    "AgentExecution",
+    "Task",
+    "Appointment",
+    "CalendarConnection",
+    "Notification",
 ]

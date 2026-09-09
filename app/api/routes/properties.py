@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.security import get_current_org_user
+from app.core.security import get_current_org_user, require_role
 from app.schemas.activity import ActivityRead
 from app.schemas.enums import ActivityType
 from app.schemas.property import PropertyCreate, PropertyFeatureAssign, PropertyRead, PropertyUpdate
@@ -32,7 +32,7 @@ def create_property(
     current_user: CurrentUser = Depends(get_current_org_user),
     db: Session = Depends(get_db),
 ) -> PropertyRead:
-    return PropertyService(db).create(current_user.organization_id, data)
+    return PropertyService(db).create(current_user.organization_id, data, actor_user_id=current_user.id)
 
 
 @router.get("/{property_id}", response_model=PropertyRead)
@@ -51,16 +51,18 @@ def update_property(
     current_user: CurrentUser = Depends(get_current_org_user),
     db: Session = Depends(get_db),
 ) -> PropertyRead:
-    return PropertyService(db).update(current_user.organization_id, property_id, data)
+    return PropertyService(db).update(current_user.organization_id, property_id, data, actor_user_id=current_user.id)
 
 
-@router.delete("/{property_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{property_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_role("owner", "admin"))]
+)
 def delete_property(
     property_id: uuid.UUID,
     current_user: CurrentUser = Depends(get_current_org_user),
     db: Session = Depends(get_db),
 ) -> None:
-    PropertyService(db).delete(current_user.organization_id, property_id)
+    PropertyService(db).delete(current_user.organization_id, property_id, actor_user_id=current_user.id)
 
 
 @router.post("/{property_id}/features", response_model=PropertyRead)

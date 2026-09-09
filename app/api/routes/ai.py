@@ -1,3 +1,4 @@
+import time
 import uuid
 from typing import cast
 
@@ -9,12 +10,14 @@ from app.ai.lead_context_tool import get_lead_context
 from app.ai.llm.base import LLMProvider
 from app.ai.llm.errors import LLMConfigError, LLMInvalidOutputError, LLMProviderError, LLMTimeoutError
 from app.ai.llm.factory import build_default_provider
+from app.ai.registry import get_agent
 from app.core.database import get_db
 from app.core.security import get_current_org_user
 from app.schemas.follow_up import FollowUpResult
 from app.schemas.lead_context import LeadContext
 from app.schemas.lead_intelligence import LeadIntelligenceResult
 from app.schemas.user import CurrentUser
+from app.services.agent_execution_service import AgentExecutionService
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
@@ -50,6 +53,60 @@ def read_lead_context(
     return get_lead_context(current_user, contact_id, db, activity_limit=activity_limit)
 
 
+def _run_and_record(agent_id: str, current_user: CurrentUser, contact_id: uuid.UUID, db: Session, llm: LLMProvider):
+    """
+    Shared by both agent routes below: runs the Gateway, then persists an
+    AgentExecution either way (see app/models/agent_execution.py) — one
+    place, so a third agent route follows the same pattern by calling this,
+    not by re-copying the try/except. Deliberately lives here (not inside
+    AIGateway) since the Gateway's own docstring states it never touches
+    the database; recording stays this route layer's job, same as mapping
+    LLM errors to HTTP status codes already was before this change.
+
+    A 404 from context authorization (unknown/cross-org contact) is not
+    caught here — it propagates untouched, same as AIGateway.run() already
+    documents, and nothing gets recorded for it (an authorization outcome
+    isn't an AI execution outcome).
+    """
+    descriptor = get_agent(agent_id)
+    started = time.monotonic()
+    try:
+        execution = AIGateway(db, llm).run(agent_id, current_user, contact_id)
+    except (LLMTimeoutError, LLMInvalidOutputError, LLMProviderError) as exc:
+        duration_ms = int((time.monotonic() - started) * 1000)
+        AgentExecutionService(db).record_failure(
+            organization_id=current_user.organization_id,
+            agent_name=agent_id,
+            agent_version=descriptor.version,
+            contact_id=contact_id,
+            user_id=current_user.id,
+            provider=llm.provider_name,
+            model=llm.model_name,
+            duration_ms=duration_ms,
+            error=exc,
+        )
+        if isinstance(exc, LLMTimeoutError):
+            raise HTTPException(status.HTTP_504_GATEWAY_TIMEOUT, "The AI analysis service timed out.") from exc
+        if isinstance(exc, LLMInvalidOutputError):
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY, "The AI analysis service returned an unexpected response."
+            ) from exc
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "The AI analysis service is currently unavailable.") from exc
+
+    AgentExecutionService(db).record_success(
+        organization_id=current_user.organization_id,
+        agent_name=agent_id,
+        agent_version=execution.metadata.agent_version,
+        contact_id=contact_id,
+        user_id=current_user.id,
+        provider=execution.metadata.provider,
+        model=execution.metadata.model,
+        duration_ms=execution.metadata.duration_ms,
+        result=execution.result,
+    )
+    return execution.result
+
+
 @router.post("/lead-intelligence/{contact_id}", response_model=LeadIntelligenceResult)
 def analyze_lead(
     contact_id: uuid.UUID,
@@ -62,19 +119,10 @@ def analyze_lead(
     (app/ai/gateway.py) for one contact: builds its LeadContext, asks the
     configured LLM to analyze it, and returns the validated structured
     result. Read-only — this never modifies any CRM data and never contacts
-    the lead. This route owns authentication, organization authorization
-    (via get_current_org_user), and mapping LLM failures to HTTP status
-    codes; the gateway owns agent lookup, invocation, and execution metadata.
+    the lead. Every run (success or failure) is persisted as an
+    AgentExecution — see _run_and_record above and app/models/agent_execution.py.
     """
-    try:
-        execution = AIGateway(db, llm).run("lead_intelligence", current_user, contact_id)
-    except LLMTimeoutError as exc:
-        raise HTTPException(status.HTTP_504_GATEWAY_TIMEOUT, "The AI analysis service timed out.") from exc
-    except LLMInvalidOutputError as exc:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "The AI analysis service returned an unexpected response.") from exc
-    except LLMProviderError as exc:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "The AI analysis service is currently unavailable.") from exc
-    return cast(LeadIntelligenceResult, execution.result)
+    return cast(LeadIntelligenceResult, _run_and_record("lead_intelligence", current_user, contact_id, db, llm))
 
 
 @router.post("/follow-up/{contact_id}", response_model=FollowUpResult)
@@ -90,14 +138,8 @@ def recommend_follow_up(
     this lead needs follow-up right now and through which channel, and
     returns the validated structured recommendation. Read-only and advisory
     only — this never modifies any CRM data, sends any message, or creates
-    any appointment; a human advisor decides whether to act on it.
+    any appointment; a human advisor decides whether to act on it. Every
+    run (success or failure) is persisted as an AgentExecution — see
+    _run_and_record above.
     """
-    try:
-        execution = AIGateway(db, llm).run("follow_up", current_user, contact_id)
-    except LLMTimeoutError as exc:
-        raise HTTPException(status.HTTP_504_GATEWAY_TIMEOUT, "The AI analysis service timed out.") from exc
-    except LLMInvalidOutputError as exc:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "The AI analysis service returned an unexpected response.") from exc
-    except LLMProviderError as exc:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "The AI analysis service is currently unavailable.") from exc
-    return cast(FollowUpResult, execution.result)
+    return cast(FollowUpResult, _run_and_record("follow_up", current_user, contact_id, db, llm))

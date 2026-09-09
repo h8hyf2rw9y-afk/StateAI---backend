@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.security import get_current_org_user
+from app.core.security import get_current_org_user, require_role
 from app.schemas.activity import ActivityCreate, ActivityRead
 from app.schemas.buyer_requirement import BuyerRequirementCreate, BuyerRequirementRead
 from app.schemas.contact import ContactCreate, ContactRead, ContactRoleAssign, ContactUpdate
@@ -36,7 +36,7 @@ def create_contact(
     current_user: CurrentUser = Depends(get_current_org_user),
     db: Session = Depends(get_db),
 ) -> ContactRead:
-    return ContactService(db).create(current_user.organization_id, data)
+    return ContactService(db).create(current_user.organization_id, data, actor_user_id=current_user.id)
 
 
 @router.get("/{contact_id}", response_model=ContactRead)
@@ -55,16 +55,16 @@ def update_contact(
     current_user: CurrentUser = Depends(get_current_org_user),
     db: Session = Depends(get_db),
 ) -> ContactRead:
-    return ContactService(db).update(current_user.organization_id, contact_id, data)
+    return ContactService(db).update(current_user.organization_id, contact_id, data, actor_user_id=current_user.id)
 
 
-@router.delete("/{contact_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{contact_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_role("owner", "admin"))])
 def delete_contact(
     contact_id: uuid.UUID,
     current_user: CurrentUser = Depends(get_current_org_user),
     db: Session = Depends(get_db),
 ) -> None:
-    ContactService(db).delete(current_user.organization_id, contact_id)
+    ContactService(db).delete(current_user.organization_id, contact_id, actor_user_id=current_user.id)
 
 
 @router.post("/{contact_id}/roles", response_model=ContactRead)
@@ -105,7 +105,9 @@ def create_contact_buyer_requirement(
     current_user: CurrentUser = Depends(get_current_org_user),
     db: Session = Depends(get_db),
 ) -> BuyerRequirementRead:
-    return BuyerRequirementService(db).create(current_user.organization_id, contact_id, data)
+    return BuyerRequirementService(db).create(
+        current_user.organization_id, contact_id, data, actor_user_id=current_user.id
+    )
 
 
 @router.get("/{contact_id}/property-interests", response_model=list[PropertyInterestRead])

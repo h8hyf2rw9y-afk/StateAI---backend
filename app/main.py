@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.router import api_router
 from app.api.routes import health
 from app.core.config import settings
+from app.core.errors import RequestIDMiddleware, register_exception_handlers
 
 # Without this, Python's logging module has no configured handler and
 # silently drops anything below WARNING — which meant every logger.info()
@@ -17,6 +18,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 
 app = FastAPI(title="StateAI / PropPilot API", version="0.1.0")
 
+# Order matters: Starlette applies middleware outermost-first in the order
+# added, so CORS still wraps every response (including one built by an
+# exception handler) while RequestIDMiddleware still runs for every request
+# that reaches this app, error or not — see app/core/errors.py.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -24,6 +29,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(RequestIDMiddleware)
+register_exception_handlers(app)
 
 app.include_router(health.router)
 app.include_router(api_router, prefix="/api/v1")

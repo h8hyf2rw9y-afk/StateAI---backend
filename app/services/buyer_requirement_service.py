@@ -10,11 +10,13 @@ from app.repositories.buyer_requirement_repo import BuyerRequirementRepository
 from app.repositories.contact_repo import ContactRepository
 from app.schemas.buyer_requirement import (
     BuyerRequirementCreate,
+    BuyerRequirementRead,
     BuyerRequirementUpdate,
     FeatureAssign,
     LocationCreate,
     MINMAX_FIELDS,
 )
+from app.services.audit_service import AuditService
 
 
 def _check_minmax(requirement: BuyerRequirement) -> None:
@@ -32,6 +34,7 @@ class BuyerRequirementService:
         self.db = db
         self.repo = BuyerRequirementRepository(db)
         self.contact_repo = ContactRepository(db)
+        self.audit = AuditService(db)
 
     def list(self, organization_id: uuid.UUID, *, limit: int = 50, offset: int = 0) -> list[BuyerRequirement]:
         return self.repo.list(organization_id, limit=limit, offset=offset)
@@ -53,27 +56,67 @@ class BuyerRequirementService:
         return contact
 
     def create(
-        self, organization_id: uuid.UUID, contact_id: uuid.UUID, data: BuyerRequirementCreate
+        self,
+        organization_id: uuid.UUID,
+        contact_id: uuid.UUID,
+        data: BuyerRequirementCreate,
+        actor_user_id: uuid.UUID | None = None,
     ) -> BuyerRequirement:
         self._get_contact_or_404(organization_id, contact_id)
         requirement = self.repo.create(organization_id, contact_id=contact_id, **data.model_dump())
+        after = BuyerRequirementRead.model_validate(requirement).model_dump(mode="json")
+        self.audit.record(
+            organization_id=organization_id,
+            actor_user_id=actor_user_id,
+            entity_type="buyer_requirement",
+            entity_id=requirement.id,
+            action="BUYER_REQUIREMENT_CREATED",
+            after=after,
+        )
         self.db.commit()
         self.db.refresh(requirement)
         return requirement
 
     def update(
-        self, organization_id: uuid.UUID, requirement_id: uuid.UUID, data: BuyerRequirementUpdate
+        self,
+        organization_id: uuid.UUID,
+        requirement_id: uuid.UUID,
+        data: BuyerRequirementUpdate,
+        actor_user_id: uuid.UUID | None = None,
     ) -> BuyerRequirement:
         requirement = self.get_or_404(organization_id, requirement_id)
+        before = BuyerRequirementRead.model_validate(requirement).model_dump(mode="json")
         updated = self.repo.update(requirement, **data.model_dump(exclude_unset=True))
         _check_minmax(updated)
+        after = BuyerRequirementRead.model_validate(updated).model_dump(mode="json")
+        self.audit.record(
+            organization_id=organization_id,
+            actor_user_id=actor_user_id,
+            entity_type="buyer_requirement",
+            entity_id=updated.id,
+            action="BUYER_REQUIREMENT_UPDATED",
+            before=before,
+            after=after,
+        )
         self.db.commit()
         self.db.refresh(updated)
         return updated
 
-    def delete(self, organization_id: uuid.UUID, requirement_id: uuid.UUID) -> None:
+    def delete(
+        self, organization_id: uuid.UUID, requirement_id: uuid.UUID, actor_user_id: uuid.UUID | None = None
+    ) -> None:
         requirement = self.get_or_404(organization_id, requirement_id)
+        before = BuyerRequirementRead.model_validate(requirement).model_dump(mode="json")
+        deleted_id = requirement.id
         self.repo.delete(requirement)
+        self.audit.record(
+            organization_id=organization_id,
+            actor_user_id=actor_user_id,
+            entity_type="buyer_requirement",
+            entity_id=deleted_id,
+            action="BUYER_REQUIREMENT_DELETED",
+            before=before,
+        )
         self.db.commit()
 
     def add_location(

@@ -20,7 +20,7 @@ Este repositorio contiene el **backend** del proyecto (la API y la lógica de se
 
 ## Status
 
-🚧 **Foundational data model + Activities/Interactions**, live on the real Supabase Postgres database, seeded with realistic demo data, and covered by 40 passing tests. No FastAPI-side business workflows beyond CRUD + deterministic matching + activity logging exist yet: no transactions, commissions, documents, appointments, AI agents, or advanced automation. See [What's next](#whats-next).
+🚧 **Core CRM (Contacts/Properties/Buyer Requirements/Property Interests/Activities/Features) + two read-only AI agents (Lead Intelligence, Follow-up) behind an AI Gateway + a production-readiness hardening pass** (Audit Log, AI execution persistence, Tasks, Appointments, a prepared-but-stubbed Calendar Integration layer, a Notification foundation, minimal role authorization, and global structured error handling) — live on the real Supabase Postgres database, seeded with realistic demo data, and covered by 192 passing tests. Still no Transactions, Commissions, Documents, real OAuth calendar sync, or notification delivery (email/push/SMS) — see [What's next](#whats-next) for exactly what's real versus prepared-but-not-implemented.
 
 ## Core architectural principle
 
@@ -47,13 +47,16 @@ The same Contact can have both over time (loses interest in one property, but st
 
 ```
 app/
-  main.py                  # FastAPI() instance, CORS, router registration
+  main.py                  # FastAPI() instance, CORS, request-id + error-handling middleware, router registration
   core/
     config.py                 # pydantic-settings: DATABASE_URL, SUPABASE_URL, SUPABASE_JWT_AUD, FRONTEND_ORIGINS
     database.py                  # SQLAlchemy engine, SessionLocal, get_db() dependency
-    security.py                     # JWT verification (get_current_claims) + org resolution (get_current_org_user)
-    seed_data.py                       # initial rows for the roles/features catalog tables — single source
-                                          # of truth for both the Alembic migration and the test fixtures
+    security.py                     # JWT verification (get_current_claims), org resolution (get_current_org_user),
+                                       # and require_role/require_any_role — see Authorization Model
+    errors.py                          # RequestIDMiddleware + the global {"error": {...}} exception handlers —
+                                          # see Error Handling
+    seed_data.py                          # initial rows for the roles/features catalog tables — single source
+                                             # of truth for both the Alembic migration and the test fixtures
   models/                   # SQLAlchemy ORM models — one module per entity group (see Data model below)
     base.py                     # declarative Base, UUIDPKMixin, TimestampMixin/CreatedAtMixin
     external.py                    # a stub for Supabase's auth.users table (see Data model)
@@ -62,16 +65,26 @@ app/
     common.py                      # ORMModel base (from_attributes=True)
     matching.py                       # response shape for the /matches endpoint
   repositories/             # thin SQLAlchemy query classes, always organization_id-scoped (see base.py)
-  services/                 # business logic on top of repositories (contact/property/buyer-requirement/
-                               # property-interest CRUD + matching_service.py for Use Case 5)
+  services/                 # business logic on top of repositories, including:
+    audit_service.py            # the one reusable audit-log write path — see Audit Logging
+    agent_execution_service.py     # AgentExecution persistence — see AI Execution Persistence
+  ai/
+    lead_context_tool.py      # get_lead_context — the AI Context Layer's tool
+    gateway.py                    # AIGateway — orchestrates agents; deliberately never touches the database
+    registry.py                      # AGENT_REGISTRY — the explicit list of runnable agents
+  integrations/
+    calendar/                 # CalendarProvider interface + Google/Apple/Notion STUBS only — see
+                                 # Calendar Integration Architecture. Nothing here is called by any route today.
   api/
     routes/                    # one module per resource (health, me, contacts, properties,
-                                  # buyer_requirements, property_interests)
+                                  # buyer_requirements, property_interests, activities, features, ai,
+                                  # agent_executions, audit_logs, tasks, appointments,
+                                  # calendar_connections, notifications)
     router.py                     # aggregates routers under /api/v1 (health/  is mounted unversioned)
 alembic/
   env.py                    # reads DATABASE_URL from app.core.config; excludes the `auth` schema from
                                # autogenerate (see Data model)
-  versions/                 # one initial migration — every table below, plus roles/features seed data
+  versions/                 # linear migration history — every table below, plus roles/features seed data
 tests/
   conftest.py               # in-memory SQLite (FK enforcement on) + a fake authenticated user, via
                                # FastAPI dependency_overrides — no live Supabase project needed to test
@@ -79,6 +92,14 @@ tests/
   test_schemas.py                 # soft-enum + min/max range validation
   test_contacts_api.py               # representative CRUD integration test (the pattern every entity follows)
   test_matching_api.py                  # Use Cases 1-5 end to end, including the matching hard filters
+  test_audit_log.py                        # audit record creation, actor tracking, before/after, isolation
+  test_agent_execution.py                     # AI execution persistence, success/failure, isolation
+  test_tasks_api.py                              # Task CRUD, lifecycle, cross-org references, isolation
+  test_appointments_api.py                          # Appointment CRUD, lifecycle, isolation
+  test_notifications_api.py                            # personal ownership, unread filtering
+  test_calendar_connections_api.py                        # connection registration, personal ownership
+  test_authorization.py                                      # require_role, and the routes that use it
+  test_error_handling.py                                        # the global error envelope
 pyproject.toml / uv.lock
 alembic.ini
 .env.example
@@ -103,6 +124,12 @@ Every business table (except the two catalogs and the join tables) carries `orga
 | `buyer_requirement_features` | Catalog junction with a `classification`: `must_have` / `preferred` / `deal_breaker`. |
 | `property_interests` | Case A — a Contact's interest in one specific Property. Not unique on `(contact_id, property_id)`: a contact can lose and regain interest over time, and that history is kept. |
 | `activities` | A structured, chronological record of what actually happened with a Contact (call, WhatsApp, viewing, offer, …) — `property_id` optional (only set when the activity is about a specific listing), `created_by_user_id` optional. `occurred_at` is a business timestamp (*when it happened*), separate from the inherited `created_at`/`updated_at` audit trail (*when the row was logged*) — the same split `property_interests` already uses via `first_contact_at`/`last_contact_at`. This is what replaces free-text `notes` as the CRM's real timeline; see [Activities](#activities). |
+| `audit_logs` | "Who changed what, when" — see [Audit Logging](#audit-logging). |
+| `agent_executions` | "What did the AI recommend, when, did anyone act on it" — see [AI Execution Persistence](#ai-execution-persistence). |
+| `tasks` | "Something that needs to happen" (follow-up, call, document deadline, …) — see [Tasks & Reminders](#tasks--reminders). Distinct from `activities` ("something that already happened"). |
+| `appointments` | A scheduled/planned event (showing, notary, signing, …) — see [Appointments](#appointments). Distinct from `activities` (what happened) and `tasks` (an open action item). |
+| `calendar_connections` | Metadata-only record of a user's intent to sync with Google/Apple/Notion — **no token columns exist** (see [Calendar Integration Architecture](#calendar-integration-architecture)). |
+| `notifications` | An in-app notification record for one user — see [Notifications Architecture](#notifications-architecture). |
 
 **The `auth.users` reference**: `app/models/external.py` defines a minimal `Table` stand-in for Supabase's own `auth.users` — not a real model, just enough for SQLAlchemy to resolve `users.id`'s foreign key against it (SQLAlchemy requires the referenced table to exist somewhere in its metadata graph, even for an external, unmanaged table). `alembic/env.py`'s `include_object` filter explicitly excludes anything in the `auth` schema from autogenerate, so migrations never try to create/alter/drop Supabase's own table.
 
@@ -192,26 +219,41 @@ All endpoints below live under `/api/v1` and require `Authorization: Bearer <sup
 |---|---|---|
 | GET | `/me` | Whoami — see [Authentication](#authentication). |
 | GET, POST | `/contacts` | List (paginated) / create. |
-| GET, PATCH, DELETE | `/contacts/{id}` | |
+| GET, PATCH | `/contacts/{id}` | |
+| **DELETE** | **`/contacts/{id}`** | **owner/admin only** — see [Authorization Model](#authorization-model). |
 | POST, DELETE | `/contacts/{id}/roles[/{role_key}]` | Assign / remove a role. |
 | GET, POST | `/contacts/{id}/buyer-requirements` | List / create *for that contact* (Case B). |
 | GET, POST | `/contacts/{id}/property-interests` | List / create *for that contact* (Case A). |
 | GET, POST | `/contacts/{id}/activities` | Create / the contact's timeline (oldest first) — see [Activities](#activities). |
 | GET, POST | `/properties` | |
-| GET, PATCH, DELETE | `/properties/{id}` | |
+| GET, PATCH | `/properties/{id}` | |
+| **DELETE** | **`/properties/{id}`** | **owner/admin only.** |
 | POST, DELETE | `/properties/{id}/features[/{feature_key}]` | What a property actually has. |
 | GET | `/properties/{id}/activities` | Most-recent-first. |
 | GET | `/buyer-requirements` | |
-| GET, PATCH, DELETE | `/buyer-requirements/{id}` | |
+| GET, PATCH | `/buyer-requirements/{id}` | |
+| **DELETE** | **`/buyer-requirements/{id}`** | **owner/admin only.** |
 | POST, DELETE | `/buyer-requirements/{id}/locations[/{location_id}]` | Add / remove a preferred area — never deletes the requirement itself. |
 | POST, DELETE | `/buyer-requirements/{id}/features[/{feature_key}]` | Tag / untag a must-have/preferred/deal-breaker feature — removes the relationship only, never the global feature catalog row. |
 | **GET** | **`/buyer-requirements/{id}/matches`** | **Use Case 5** — deterministic candidate properties (see below). |
 | GET | `/features` | The global feature catalog (`app/models/feature.py`) — `?active=false` includes inactive features too. Defaults to active-only. |
-| GET, PATCH, DELETE | `/property-interests/{id}` | |
+| GET, PATCH | `/property-interests/{id}` | |
+| **DELETE** | **`/property-interests/{id}`** | **owner/admin only.** |
 | GET | `/activities/{id}` | |
 | GET | `/ai/lead-context/{contact_id}` | Internal/debug surface for the AI Context Layer — see [AI Context Layer](#ai-context-layer). |
-| POST | `/ai/lead-intelligence/{contact_id}` | Runs the Lead Intelligence Agent — see [Lead Intelligence Agent](#lead-intelligence-agent). |
-| POST | `/ai/follow-up/{contact_id}` | Runs the Follow-up Agent — see [Follow-up Agent](#follow-up-agent). |
+| POST | `/ai/lead-intelligence/{contact_id}` | Runs the Lead Intelligence Agent — persists an `AgentExecution` either way. See [Lead Intelligence Agent](#lead-intelligence-agent) and [AI Execution Persistence](#ai-execution-persistence). |
+| POST | `/ai/follow-up/{contact_id}` | Runs the Follow-up Agent — persists an `AgentExecution` either way. See [Follow-up Agent](#follow-up-agent). |
+| GET | `/ai/agent-executions` | History of AI runs for this org, filterable by `contact_id`/`agent_name`. |
+| GET, PATCH | `/ai/agent-executions/{id}` | PATCH sets `human_action` (`acted_on`/`dismissed`) — the only client-writable field. |
+| GET | `/audit-logs`, `/audit-logs/{id}` | Read-only — see [Audit Logging](#audit-logging). |
+| GET, POST | `/tasks` | See [Tasks & Reminders](#tasks--reminders). |
+| GET, PATCH, DELETE | `/tasks/{id}` | |
+| GET, POST | `/appointments` | See [Appointments](#appointments). |
+| GET, PATCH, DELETE | `/appointments/{id}` | |
+| GET, POST | `/calendar-connections` | A user's own connections only — see [Calendar Integration Architecture](#calendar-integration-architecture). No OAuth flow exists behind this. |
+| DELETE | `/calendar-connections/{id}` | |
+| GET | `/notifications` | A user's own notifications only — `?unread=true` filters. No POST route — see [Notifications Architecture](#notifications-architecture). |
+| PATCH | `/notifications/{id}` | Marks read/unread (`{"read": true/false}`). |
 
 ### Example: Use Cases 1–5 via curl
 
@@ -491,6 +533,93 @@ Comparing across models/providers today means re-running this after changing `OL
 
 **Performance, measured, not assumed** (CPU-only Intel Core i7-1065G7, ~12 GB RAM, no GPU): with `llama3.2` (3B), each `(agent, contact)` run took roughly **2-2.5 minutes**, occasionally longer for a contact with a larger context (Carlos's Follow-up run needed a 240s ceiling instead of 180s during real testing — see that test file's comment). Both agents together against all four demo contacts is a **~20-25 minute** sweep. `llama3.1` (8B) was tried first and was markedly worse on this hardware — several minutes per call, sometimes exceeding a 300s timeout outright — which is why `llama3.2` is the current default (see [Model configuration](#model-configuration)). This is real, measured data point toward a future decision (GPU infrastructure, a different local model, or routing specific agents to Anthropic) — no such decision has been made yet.
 
+## Audit Logging
+
+"Who changed what, when" for CRM data — a real production-readiness gap the core CRUD modules shipped without. `audit_logs` (`app/models/audit_log.py`) captures `organization_id`, `actor_user_id` (nullable, `SET NULL` — a deleted user account never erases the historical fact that *someone* acted), `entity_type`/`entity_id`/`action` (freeform strings, not a soft-enum `Literal`, deliberately: every future module adds its own entity/action pair and this table must accept that without a code change here), and `before_data`/`after_data` (JSONB on Postgres, plain JSON on SQLite via `.with_variant()` — the test DB).
+
+**One reusable write path, not duplicated per route**: `app/services/audit_service.py`'s `AuditService.record(...)` is the only place that writes to this table. A Service method (never a route) calls it around its own existing create/update/delete, in the *same* unit of work — `AuditService.record` deliberately doesn't call `db.commit()` itself, so the audit row and the change it describes commit (or roll back) together. Wired in today for `Contact`, `Property`, `BuyerRequirement`, `Activity` (create only — no update/delete route exists for it), `Task`, and `Appointment`; a future module follows the same one-line-per-service-method pattern rather than inventing its own.
+
+Snapshots are built from each entity's own `*Read` Pydantic schema (`ContactRead.model_validate(contact).model_dump(mode="json")`), never the raw ORM `__dict__` — so a field already excluded from that entity's API response (there are none sensitive today) is excluded here the same way, not via a second exclusion list. No credential, token, or password ever appears in any snapshot, because none of the audited entities have such a field to begin with.
+
+Read-only from the API: `GET /audit-logs` (filterable by `entity_type`/`entity_id`) and `GET /audit-logs/{id}`, both organization-scoped like everything else — there is no create/update/delete route, since nothing outside `AuditService` should ever write here.
+
+## AI Execution Persistence
+
+The Lead Intelligence and Follow-up agents were read-only/advisory from day one — that doesn't change here. What was missing was any record of *what they said*: "what did the AI recommend for this lead, when, which agent, did it work, did anyone act on it." `agent_executions` (`app/models/agent_execution.py`) now answers that.
+
+**Deliberately NOT written from inside `AIGateway`**: the Gateway's own docstring states it "never touches the database or Supabase directly," and that stays true. Persistence happens in `app/api/routes/ai.py`'s `_run_and_record` helper — one function shared by both agent routes, called right around the existing `AIGateway(db, llm).run(...)` call, exactly the same layer that already owned mapping `LLMError` subclasses to HTTP status codes. A third agent route follows the same pattern by calling `_run_and_record`, not by re-copying the try/except.
+
+- **Success** records `agent_name`, `agent_version`, `contact_id`, `user_id`, `provider`, `model`, `duration_ms` (from the Gateway's own `ExecutionMetadata` — already accurate, no extra timer needed), and `output` (the agent's full structured result, dumped as JSON).
+- **Failure** (`LLMTimeoutError`/`LLMInvalidOutputError`/`LLMProviderError`) still records a row — `status="failed"`, `output={"error": "<exception class>", "message": "..."}` — timed by the route itself since no `GatewayExecution` exists to read a duration from.
+- **A `404` from context authorization is not recorded**, matching the Gateway's own documented behavior: an unknown/cross-org `contact_id` is an authorization outcome, never an AI execution one.
+- `input_snapshot` exists as a column but is intentionally left `NULL` today — the `LeadContext` an agent read is already deterministic and reconstructible on demand via `GET /ai/lead-context/{contact_id}`, so storing a full duplicate on every single execution wasn't judged worth the extra write/storage yet.
+- `human_action`/`human_action_at` (soft enum: `acted_on`/`dismissed`) let an advisor record whether they did anything with a recommendation, via `PATCH /ai/agent-executions/{id}` — the only client-writable field on this table.
+
+`GET /ai/agent-executions` (filterable by `contact_id`/`agent_name`) and `GET/PATCH /ai/agent-executions/{id}` are organization-scoped like everything else. This remains pure observability: nothing here lets an agent write CRM data, and a failed AI call is still logged, not swallowed.
+
+## Tasks & Reminders
+
+`tasks` (`app/models/task.py`) — "something that needs to happen": a follow-up call, a document deadline, a notary reminder, an AI recommendation a human turned into concrete work. **Deliberately distinct from `Activity`** ("something that already happened") — completing a Task never auto-creates an Activity; a human decides whether the outcome is worth logging as one.
+
+`task_type` (soft enum: `follow_up`/`call`/`showing`/`document`/`contract`/`notary`/`payment`/`commission`/`other` — several of these exist for modules that don't yet, so a Task can already reference them), `status` (`pending`/`in_progress`/`completed`/`cancelled`), `priority` (`low`/`medium`/`high`/`urgent`), `due_at` (required — every task has a deadline), `completed_at` (nullable, auto-stamped server-side when `status` is set to `completed` without an explicit value). Optionally associated with a `contact_id`/`property_id`/`buyer_requirement_id`/`property_interest_id` — each validated against the caller's own organization before the task is created (never trusted blindly), all `CASCADE` on delete (a task about something that no longer exists stops being actionable, unlike an Activity's historical record). `assigned_to_user_id`/`created_by_user_id` are `SET NULL` — an unassigned task is still a valid backlog item, and deleting a user account shouldn't delete task history.
+
+`GET/POST /tasks` (filterable by `status`/`priority`/`assigned_to_user_id`/`contact_id`/`property_id`), `GET/PATCH/DELETE /tasks/{id}`.
+
+## Appointments
+
+`appointments` (`app/models/appointment.py`) — a scheduled/planned event: "this showing is booked for Tuesday at 4pm." **Deliberately distinct from both `Activity`** (what happened) **and `Task`** (an open action item with no fixed time) — an Appointment doesn't become an Activity automatically once it occurs; a human logs the outcome as an Activity separately, matching the intended flow: *agent creates appointment → occurs → Activity records the outcome*.
+
+`appointment_type` (`showing`/`call`/`meeting`/`notary`/`signing`/`other`), `status` (`scheduled`/`confirmed`/`completed`/`cancelled`/`no_show`), `start_at`/`end_at` (both required, `CHECK (start_at <= end_at)` at the DB level *and* re-validated at the service layer against the merged row on a partial update — checking before the repository's flush, not after, so the friendly 422 fires instead of the DB constraint surfacing as a generic 409). `contact_id` is `CASCADE` (mirrors `PropertyInterest`); `property_id` is `SET NULL` (mirrors `Activity.property_id`'s exact reasoning — deleting a property must not erase the historical fact that an appointment happened there).
+
+`external_calendar_event_id`/`external_calendar_provider` exist so a future real calendar sync has somewhere to record "this is already mirrored externally as event X" — both `NULL` today; nothing populates them yet (see [Calendar Integration Architecture](#calendar-integration-architecture)). This PropPilot row is always the source of truth, never the external calendar.
+
+`GET/POST /appointments` (filterable by `status`/`contact_id`/`property_id`/`assigned_to_user_id`/`start_from`/`start_to`), `GET/PATCH/DELETE /appointments/{id}`.
+
+## Notifications Architecture
+
+The intended shape: `Task.due_at` / `Appointment.start_at` → a scheduled job → a `Notification` row → a delivery channel. **Only the middle-to-last step exists today.**
+
+`notifications` (`app/models/notification.py`): `type` (soft enum — `task_due`/`appointment_upcoming`/`follow_up_reminder`/`document_deadline`/`contract_deadline`/`system`), `title`, `body`, an optional freeform `related_entity_type`/`related_entity_id` pointer (same pattern as `AuditLog`, for the same reason — any future module can point a notification at its own rows without a schema change), and `read_at`.
+
+**What's real**: `NotificationService.create(...)` and the record itself. A notification is *personal*, not just organization-scoped — `GET /notifications` only ever returns the caller's own (verified by `user_id`, not just `organization_id` — another org member, even an owner/admin, cannot read or mark someone else's), and `PATCH /notifications/{id}` (`{"read": true/false}`) is the only mutation.
+
+**What's explicitly NOT implemented**: there is no `POST /notifications` route (a client should never fabricate a notification for anyone, including themselves — only this backend's own services decide someone gets notified) and no scheduled job anywhere in this codebase that scans `Task.due_at`/`Appointment.start_at` and calls `NotificationService.create` automatically — that needs a job scheduler (e.g. `pg_cron`, Celery beat, APScheduler), which doesn't exist here yet. There is also no delivery channel beyond this in-app record: email, push, and SMS/WhatsApp are all future work, each its own integration the way [Calendar Integration Architecture](#calendar-integration-architecture) is being prepared.
+
+## Calendar Integration Architecture
+
+Prepared, not implemented — per the explicit instruction not to build fake integrations. `app/integrations/calendar/base.py` defines `CalendarProvider`, a `Protocol` with the operations a real integration would need: `create_event`, `update_event`, `delete_event`, `list_events`, `refresh_token`. `google.py`/`apple.py`/`notion.py` each implement that Protocol's shape but every method raises `CalendarIntegrationNotImplementedError` — no real Google/Apple/Notion API call exists anywhere in this codebase, and nothing calls these classes today (no route, no service, no scheduled job).
+
+**Design principle this package protects**: a PropPilot `Appointment` row is always the source of truth. An external calendar is a synchronization *target* — something an Appointment gets mirrored to — never the other way around, and never something the app depends on to function.
+
+`calendar_connections` (`app/models/calendar_connection.py`) records a user's *intent* to connect a provider — `provider` (`google`/`apple`/`notion`), `status` (`pending`/`connected`/`expired`/`error`/`disconnected` — never actually reaches `connected` today, since there's no OAuth flow to get it there), `external_account_id`, `scopes`, `expires_at`. **It has no `access_token`/`refresh_token` columns.** Storing a real OAuth token needs encryption at rest (pgcrypto, envelope encryption via a KMS, or app-level encryption with a securely-managed key) — none of that exists in this codebase (no `cryptography` dependency, no key management), so per this project's own security rules, that column is omitted rather than implemented as insecure plaintext storage. `POST /calendar-connections` only ever registers this metadata row (upserting on `(user_id, provider)` — reconnecting updates the existing row rather than duplicating it); it never performs an OAuth handshake. `GET`/`DELETE` are scoped to the caller's own connections, the same personal-ownership pattern as Notifications.
+
+**To make this real**, in order: (1) pick and stand up a token-encryption approach, (2) add `access_token`/`refresh_token` columns using it, (3) implement the OAuth authorization-code flow per provider, (4) implement one `CalendarProvider` subclass for real, starting with Google (most likely first). None of that is started here.
+
+## Authorization Model
+
+Roles (`owner`/`admin`/`agent`, on `users.role`) existed since the very first migration but were never enforced anywhere — every authenticated org member could do anything any other member could. `app/core/security.py` now adds `require_role(*roles)` (aliased as `require_any_role` — the same function; "any of these roles" already generalizes the single-role case), a dependency *factory* layered on top of `get_current_org_user` (which still runs first, so an unauthenticated or unprovisioned caller still gets 401/403 for that reason first): `Depends(require_role("owner", "admin"))` 403s unless the caller's role matches.
+
+**Applied today to exactly one category of action: deleting a Contact, Property, Buyer Requirement, or Property Interest** — restricted to `owner`/`admin`. Every create/update/read/list operation, and every sub-resource action (roles, features, locations), stays open to any authenticated org member — this is *not* a general RBAC matrix, and normal day-to-day CRM work was deliberately left unrestricted. Tasks, Appointments, and Calendar Connections are likewise unrestricted (routine CRM work, same category as the entities above before deletion specifically was called out as the destructive case worth gating).
+
+**Nothing else is gated today because nothing else in this codebase yet warrants it** — there is no Transactions/Commissions module and no Organization-settings/User-management route to protect. `require_role`/`require_any_role` is the exact mechanism those future modules should use (`dependencies=[Depends(require_role("owner"))]` on a route, or as a parameter dependency where the resolved `CurrentUser` is also needed) — adding one is a one-line change per route, not new machinery.
+
+## Error Handling
+
+Every error response — validation, not-found, forbidden, a conflicting write, or a genuine bug — now has the same shape:
+
+```json
+{"error": {"code": "NOT_FOUND", "message": "Contact not found.", "request_id": "..."}}
+```
+
+instead of whatever shape happened to bubble up (FastAPI's default `{"detail": ...}`, a raw SQLAlchemy traceback, an unhandled 500 with no body at all). `app/core/errors.py` has two parts: `RequestIDMiddleware` stamps a fresh UUID onto every request (`request.state.request_id`, also returned as the `X-Request-ID` response header — the value to hand a user asking "what happened?" so it can be found in the server logs), and `register_exception_handlers` maps every exception type this app can raise into that envelope:
+
+- `HTTPException` → the same status code as before (404/403/422/502/503/504/...), now in the shared shape.
+- `RequestValidationError` (a malformed body/query, or a failed Pydantic `model_validator` like `ContactBase`'s email-or-phone check) → 422, with a `message` naming which field(s) failed.
+- `IntegrityError` (a database constraint rejected the write — e.g. a race-condition double-submit past an in-memory duplicate check) → 409, generic message. **Never echoes the raw exception**: it can contain literal SQL and values.
+- Anything else (a genuine bug) → 500, generic message. The real exception and full traceback go to the server log only (`logger.exception(...)`), never the response.
+
+Never leaked to a client, under any of these paths: a stack trace, raw SQL, a filesystem path, or any exception detail beyond the short, safe message.
+
 ## Security considerations
 
 - **JWT verification is the real security boundary here** — not the frontend's `proxy.ts` (documented there as optimistic-only). Every protected route depends on `get_current_org_user`, which cryptographically verifies the token against Supabase's own public keys.
@@ -501,19 +630,26 @@ Comparing across models/providers today means re-running this after changing `OL
 - **No sensitive financial data stored** — no bank account numbers, passwords, or credit card details anywhere in this schema, per the project brief. `financing_type`/`preapproval_status` are coarse status fields only.
 - **`ANTHROPIC_API_KEY` is a secret like `DATABASE_URL`** — never commit a real value; only `.env.example` (placeholder) is tracked. With the default `LLM_PROVIDER=ollama`, this key isn't needed or read at all.
 - **Neither LLM provider ever gets database credentials, Supabase credentials, auth tokens, or user passwords** — organization authorization happens in `get_lead_context` *before* any data reaches `LeadContext`, and `LeadContext` itself already excludes that class of field (see [AI Context Layer](#ai-context-layer)). Whether the model runs on Anthropic's servers or entirely on your own machine via Ollama, it has no database access, direct or otherwise, and cannot choose or run any query.
+- **AI agents remain read-only/advisory.** Every recommendation is now persisted (`AgentExecution` — see [AI Execution Persistence](#ai-execution-persistence)) so it's observable and auditable, but nothing in this codebase lets an agent write CRM data, send a message, or create a task/appointment on its own.
+- **No OAuth token is stored anywhere.** `calendar_connections` has no `access_token`/`refresh_token` column on purpose — see [Calendar Integration Architecture](#calendar-integration-architecture) for why, and what real token storage would require before it's added.
+- **Errors never leak internals.** No stack trace, raw SQL, filesystem path, or exception detail beyond a short, safe message ever reaches a client — see [Error Handling](#error-handling). Every error response carries a `request_id` for correlating with the (server-side-only) full detail in the logs.
+- **Role authorization exists for the one destructive action category that needed it today** (deleting Contacts/Properties/Buyer Requirements/Property Interests — `owner`/`admin` only) via a reusable `require_role` dependency — see [Authorization Model](#authorization-model). Not a full RBAC matrix; normal CRUD stays open to any authenticated org member.
 
 ## What's next
 
-- Sales Copilot, built the same way Lead Intelligence and Follow-up were: on top of the existing `get_lead_context` tool and the `LLMProvider` abstraction, not a new pattern.
+- Sales Copilot, built the same way Lead Intelligence and Follow-up were: on top of the existing `get_lead_context` tool and the `LLMProvider` abstraction, not a new pattern. Once it or any agent needs to *write* CRM data (not just recommend), that's a deliberate, separate decision — not something this hardening pass enables by itself.
 - Actually sending the Follow-up Agent's `suggested_message` (WhatsApp/email integration) — deliberately out of scope; today's agent only recommends, a human sends it.
-- Wiring the frontend to the Lead Intelligence and Follow-up agents' endpoints (deliberately not done yet — backend-only so far).
+- Wiring the frontend to the Lead Intelligence, Follow-up, Tasks, Appointments, and Notifications endpoints (deliberately not done yet — backend-only so far).
 - A real production rollout decision for `LLM_PROVIDER` (Ollama is a local-dev choice, not a production one) — plus a third `LLMProvider` implementation (OpenAI/HuggingFace) if there's ever a real reason to compare providers beyond the two that already exist.
 - A provider registry, if a third or fourth provider ever makes the current `if`/`elif` in `factory.py` awkward — not needed at two providers.
 - Wire the frontend's `lib/api/*` to this backend instead of mock data.
 - A self-service way to provision `users` rows (invites/onboarding) — right now it's a manual `INSERT`.
-- Transactions, commissions, documents, notary/closing workflow (explicitly out of scope so far).
-- Appointments — a separate module from Activities (future events vs. historical record); exists as mock data in the frontend already, not in this backend yet.
-- Row Level Security, once/if the connection strategy supports it.
+- Transactions, commissions, documents, notary/closing workflow — explicitly out of scope so far, but now with an Audit Log and a `require_role` mechanism already in place to enforce authorization/traceability on them from day one, per this project's own rule that financial/legal modules must use both.
+- Real Google/Apple/Notion OAuth + token storage — see [Calendar Integration Architecture](#calendar-integration-architecture) for the exact ordered steps this needs (encryption at rest first, then the token columns, then the OAuth flow, then one real `CalendarProvider` implementation).
+- A scheduled job (e.g. `pg_cron`, Celery beat, APScheduler — none exist here yet) that scans `Task.due_at`/`Appointment.start_at` and calls `NotificationService.create` automatically — see [Notifications Architecture](#notifications-architecture).
+- Notification delivery beyond the in-app record: email, push, SMS/WhatsApp — each its own future integration.
+- Broader role authorization once Transactions/Commissions/Organization-settings/User-management routes actually exist — `require_role` is ready, nothing to build there, just apply it.
+- Row Level Security, once/if the connection strategy supports it (see [Security considerations](#security-considerations) — isolation is enforced at the application layer today).
 - Async SQLAlchemy, if/when request volume justifies the added complexity — sync was the deliberate Phase 1 choice for simplicity.
 
 ## Known environment note

@@ -90,3 +90,36 @@ def get_current_org_user(
         role=user_row.role,  # type: ignore[arg-type]
         provider=app_metadata.get("provider"),
     )
+
+
+def require_role(*roles: str):
+    """
+    A dependency *factory*: `Depends(require_role("owner", "admin"))` 403s
+    unless `current_user.role` is one of the given roles. Layers on top of
+    `get_current_org_user` (still runs first — so an unauthenticated or
+    unprovisioned caller still gets 401/403 for that reason first), not a
+    second, parallel authorization system.
+
+    Reserved for genuinely destructive or (future) financially sensitive
+    operations — see the README's Authorization Model section for exactly
+    which routes use this and why. Every normal CRUD/read operation stays
+    open to any authenticated org member on purpose; this is not a general
+    RBAC matrix.
+
+    `require_any_role` is the same function under the name this project's
+    brief also asked for — "any of these roles" already covers the
+    single-role case, so there's no separate implementation to keep in sync.
+    """
+
+    def _dependency(current_user: CurrentUser = Depends(get_current_org_user)) -> CurrentUser:
+        if current_user.role not in roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"This action requires one of these roles: {', '.join(roles)}.",
+            )
+        return current_user
+
+    return _dependency
+
+
+require_any_role = require_role

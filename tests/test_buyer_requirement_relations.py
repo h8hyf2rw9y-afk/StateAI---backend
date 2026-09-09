@@ -15,8 +15,20 @@ from app.core.security import get_current_org_user
 from app.main import app
 from app.models.contact import Contact
 from app.models.feature import Feature
-from app.models.organization import Organization
+from app.models.organization import Organization, User
 from app.schemas.user import CurrentUser
+
+
+def _make_user_b(db_session: Session, organization_id) -> CurrentUser:
+    """A real `users` row (not just a CurrentUser) — needed since creating a buyer
+    requirement now writes an audit_logs row whose actor_user_id is a real FK to
+    `users.id` (see app/services/audit_service.py)."""
+    user_row = User(id=uuid.uuid4(), organization_id=organization_id, role="owner")
+    db_session.add(user_row)
+    db_session.commit()
+    return CurrentUser(
+        id=user_row.id, email="b@example.com", organization_id=organization_id, role="owner", provider="email"
+    )
 
 
 def _create_contact(client: TestClient) -> dict:
@@ -99,7 +111,7 @@ def test_removing_a_location_cross_organization_returns_404(db_session: Session)
     db_session.add(contact_b)
     db_session.commit()
 
-    user_b = CurrentUser(id=uuid.uuid4(), email="b@example.com", organization_id=org_b.id, role="owner", provider="email")
+    user_b = _make_user_b(db_session, org_b.id)
 
     def override_get_db():
         yield db_session
@@ -232,7 +244,7 @@ def test_removing_a_feature_cross_organization_returns_404(db_session: Session):
     def override_get_db():
         yield db_session
 
-    user_b = CurrentUser(id=uuid.uuid4(), email="b@example.com", organization_id=org_b.id, role="owner", provider="email")
+    user_b = _make_user_b(db_session, org_b.id)
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_current_org_user] = lambda: user_b
     try:

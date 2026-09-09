@@ -176,3 +176,64 @@ FOLLOW_UP_ACTIONS: tuple[str, ...] = (
 FollowUpAction = Literal[
     "follow_up", "send_properties", "confirm_viewing", "check_in", "call_client", "prepare_for_appointment", "no_action"
 ]
+
+# app/models/agent_execution.py — did this AI execution complete or fail?
+# Distinct from the agent's own *content* (e.g. LeadIntelligence's "priority")
+# — this is about the execution itself, not what it concluded.
+AGENT_EXECUTION_STATUSES: tuple[str, ...] = ("succeeded", "failed")
+AgentExecutionStatus = Literal["succeeded", "failed"]
+
+# app/models/agent_execution.py's optional human_action/human_action_at —
+# did an advisor do anything with what the AI recommended? Left unset
+# (None) until a human actually looks at it; recorded manually today (no
+# route auto-sets this), via PATCH /ai/agent-executions/{id}.
+HUMAN_ACTION_STATUSES: tuple[str, ...] = ("acted_on", "dismissed")
+HumanActionStatus = Literal["acted_on", "dismissed"]
+
+# app/models/task.py — extend by adding a value here, same as every other
+# soft enum; DOCUMENT/CONTRACT/NOTARY/PAYMENT/COMMISSION exist now even
+# though those modules don't yet, so Tasks referencing them already make
+# sense once those modules land.
+TASK_TYPES: tuple[str, ...] = (
+    "follow_up", "call", "showing", "document", "contract", "notary", "payment", "commission", "other",
+)
+TaskType = Literal[
+    "follow_up", "call", "showing", "document", "contract", "notary", "payment", "commission", "other",
+]
+
+TASK_STATUSES: tuple[str, ...] = ("pending", "in_progress", "completed", "cancelled")
+TaskStatus = Literal["pending", "in_progress", "completed", "cancelled"]
+
+TASK_PRIORITIES: tuple[str, ...] = ("low", "medium", "high", "urgent")
+TaskPriority = Literal["low", "medium", "high", "urgent"]
+
+# app/models/appointment.py
+APPOINTMENT_TYPES: tuple[str, ...] = ("showing", "call", "meeting", "notary", "signing", "other")
+AppointmentType = Literal["showing", "call", "meeting", "notary", "signing", "other"]
+
+APPOINTMENT_STATUSES: tuple[str, ...] = ("scheduled", "confirmed", "completed", "cancelled", "no_show")
+AppointmentStatus = Literal["scheduled", "confirmed", "completed", "cancelled", "no_show"]
+
+# app/models/calendar_connection.py and app/integrations/calendar/ — which
+# external calendar this connection/integration targets. Three values exist
+# because the interface (CalendarProvider) is being prepared for all three
+# now; only stub implementations exist for any of them today — see
+# app/integrations/calendar/base.py and the README's Calendar Integration
+# Architecture section.
+CALENDAR_PROVIDERS: tuple[str, ...] = ("google", "apple", "notion")
+CalendarProviderName = Literal["google", "apple", "notion"]
+
+# A connection record's own lifecycle — distinct from Appointment's status.
+# "connected" never actually occurs yet: no OAuth flow exists to reach it
+# (see README) — it's modeled now so the column doesn't need to change
+# once OAuth is implemented.
+CALENDAR_CONNECTION_STATUSES: tuple[str, ...] = ("pending", "connected", "expired", "error", "disconnected")
+CalendarConnectionStatus = Literal["pending", "connected", "expired", "error", "disconnected"]
+
+# app/models/notification.py
+NOTIFICATION_TYPES: tuple[str, ...] = (
+    "task_due", "appointment_upcoming", "follow_up_reminder", "document_deadline", "contract_deadline", "system",
+)
+NotificationType = Literal[
+    "task_due", "appointment_upcoming", "follow_up_reminder", "document_deadline", "contract_deadline", "system",
+]
