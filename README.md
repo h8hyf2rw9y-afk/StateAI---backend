@@ -307,7 +307,9 @@ No provider registry — it's an `if`/`elif` in one function, on purpose (see [W
 
 ### Model configuration
 
-Model names are never hardcoded — `app/core/config.py`'s `ollama_model` (env `OLLAMA_MODEL`, default `llama3.1`) and `anthropic_model` (env `ANTHROPIC_MODEL`, default `claude-sonnet-5`) are the single source of truth for each provider, read once by the factory above. Change either by setting its environment variable, not by editing code.
+Model names are never hardcoded — `app/core/config.py`'s `ollama_model` (env `OLLAMA_MODEL`, default `llama3.2`, ~2 GB) and `anthropic_model` (env `ANTHROPIC_MODEL`, default `claude-sonnet-5`) are the single source of truth for each provider, read once by the factory above. Change either by setting its environment variable, not by editing code.
+
+`llama3.2` (3B), not the larger `llama3.1` (8B), is the default specifically because this is meant to run well on CPU-only development machines: on hardware with no GPU, `llama3.1` took several minutes per lead for this agent's JSON-schema-constrained output and sometimes still timed out at 300s. If you have GPU acceleration (or don't mind the wait), `llama3.1` gives noticeably better reasoning — just `ollama pull llama3.1` and set `OLLAMA_MODEL=llama3.1`.
 
 ### Environment variables
 
@@ -317,7 +319,7 @@ Add to your `.env` (see `.env.example`):
 # Local development (default) — needs Ollama installed and running, see below.
 LLM_PROVIDER=ollama
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=llama3.1
+OLLAMA_MODEL=llama3.2
 
 # Production option — only read when LLM_PROVIDER=anthropic.
 ANTHROPIC_API_KEY=sk-ant-...    # from https://console.anthropic.com/settings/keys
@@ -329,7 +331,7 @@ Every other endpoint in this backend works regardless of any of this. With `LLM_
 ### Running Ollama locally
 
 1. Install Ollama — Windows: download from [ollama.com/download](https://ollama.com/download), or `winget install Ollama.Ollama`. macOS/Linux: see the same page.
-2. Pull the configured model (matches `OLLAMA_MODEL`'s default): `ollama pull llama3.1` (~4.7 GB).
+2. Pull the configured model (matches `OLLAMA_MODEL`'s default): `ollama pull llama3.2` (~2 GB).
 3. Make sure the server is up: `curl http://localhost:11434/api/tags` should return JSON, not a connection error. The installer usually registers Ollama as a background service that's already running; if not, `ollama serve`.
 4. Call the endpoint as usual (see [API](#api) below) — no other setup needed.
 
@@ -341,6 +343,8 @@ Two schemas, deliberately separate:
 
 - **`LeadIntelligenceAnalysis`** — exactly what the LLM is asked to produce (its JSON schema *is* the structured-output shape both providers are constrained to): `priority` (`high`/`medium`/`low`, soft enum in `app/schemas/enums.py`), `confidence` (`0.0`-`1.0`), `reasoning`, `positive_signals`/`risk_signals` (lists of short strings), `recommended_next_action` (soft enum: `call`/`whatsapp`/`email`/`schedule_viewing`/`send_properties`/`follow_up`/`meeting`/`re_engage`/`no_action_needed`), and `insufficient_data` (a boolean the model sets instead of guessing when the context is too sparse to say anything meaningful).
 - **`LeadIntelligenceResult`** — what the route actually returns: the analysis plus provenance the agent fills in itself (`contact_id`, `model`, `prompt_version`, `generated_at`) — the LLM can't know its own model name or the current time, so those aren't fields the model fills in.
+
+**Lesson from real local testing (prompt `v2`)**: both `llama3.1` and `llama3.2` initially returned `confidence` as a percentage integer (e.g. `80`) instead of the schema's `0.0`-`1.0` decimal — a JSON schema's `minimum`/`maximum` alone isn't always enough for a small local model to infer the intended scale, even though Anthropic's forced tool-use never showed this. Pydantic correctly rejected it both times (`LLMInvalidOutputError`, never silently coerced or divided by 100 — that would be inventing a value, not validating one). The fix was making both the schema's `Field(description=...)` and the system prompt explicitly state "a decimal between 0.0 and 1.0 (e.g. 0.85), never a percentage" — confirmed fixed by re-running the same contact that had failed.
 
 **Fact vs. inference**: the schema and the system prompt both exist to keep this distinction explicit, regardless of which provider is active. `positive_signals`/`risk_signals`/`reasoning` are instructed to stay traceable to facts already present in the `LeadContext` JSON (an activity count, a stated budget, a status) — the *judgment* (`priority`, `recommended_next_action`, `confidence`) is the inference layered on top. No field here is a raw, unexplained score; `reasoning` is mandatory so a human can always see which facts led to which conclusion.
 
@@ -385,13 +389,16 @@ Fully offline and deterministic, no Ollama/Anthropic required, four files:
 Two integration tests call a real provider and are skipped by default — CI and the normal `uv run pytest` run never depend on either:
 
 ```bash
-# Real Ollama, against the demo data's Carlos/Gabriela/Carolina/Sergio — skipped unless
-# a live Ollama server answers at OLLAMA_BASE_URL (probed automatically, no flag needed).
-uv run pytest tests/test_lead_intelligence_ollama_integration.py -v -s
+# Real Ollama, against the demo data's Carlos/Gabriela/Carolina/Sergio — requires the explicit
+# RUN_OLLAMA_INTEGRATION_TESTS=1 opt-in (not just Ollama being reachable — see below) plus a live
+# Ollama server. Each contact can take 1-3+ minutes on CPU-only hardware; expect several minutes total.
+RUN_OLLAMA_INTEGRATION_TESTS=1 uv run pytest tests/test_lead_intelligence_ollama_integration.py -v -s
 
 # Real Anthropic — skipped unless ANTHROPIC_API_KEY resolves through settings.
 ANTHROPIC_API_KEY=sk-ant-... uv run pytest tests/test_lead_intelligence_integration.py -v -s
 ```
+
+The Ollama test needs an explicit env var, not just Ollama being reachable, on purpose: on a dev machine where Ollama happens to already be running for something unrelated, a plain `uv run pytest` must stay fast (a few seconds) rather than silently turning into several minutes of real LLM calls just because Ollama was up in the background.
 
 ## Security considerations
 

@@ -8,7 +8,7 @@ logged result can always be traced back to the exact prompt that produced
 it.
 """
 
-LEAD_INTELLIGENCE_PROMPT_VERSION = "v1"
+LEAD_INTELLIGENCE_PROMPT_VERSION = "v2"
 
 LEAD_INTELLIGENCE_SYSTEM_PROMPT = """\
 You are a real-estate CRM intelligence assistant. Your job is to analyze a \
@@ -40,4 +40,6 @@ list of hypothetical options.
 - Do not claim you will contact the lead, send anything, or perform any \
 action yourself — you only analyze and recommend; the advisor decides and \
 acts.
+- confidence is a decimal between 0.0 and 1.0 (e.g. 0.85). It is never a \
+percentage — do not write 85 or 85.0.
 """

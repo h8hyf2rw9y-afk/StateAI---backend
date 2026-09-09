@@ -22,7 +22,14 @@ from app.schemas.enums import LeadPriority, RecommendedNextAction
 
 class LeadIntelligenceAnalysis(BaseModel):
     priority: LeadPriority = Field(description="How urgently this lead deserves the advisor's attention right now.")
-    confidence: float = Field(ge=0.0, le=1.0, description="The model's own confidence in this analysis, from 0 to 1.")
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+        description=(
+            "The model's own confidence in this analysis, as a decimal between 0.0 and 1.0 (for example 0.85). "
+            "Never a percentage (not 85, not 85.0)."
+        ),
+    )
     reasoning: str = Field(
         description="Why this priority and action — must be traceable to specific facts in the provided context, not invented ones."
     )

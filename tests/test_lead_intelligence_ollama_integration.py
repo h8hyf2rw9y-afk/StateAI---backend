@@ -2,17 +2,21 @@
 The real-local-Ollama smoke test (Step 11 of the Ollama migration): runs
 the actual Lead Intelligence Agent, through a real OllamaProvider, against
 four demo contacts with different scenarios (Carlos, Gabriela, Carolina,
-Sergio). Skipped automatically unless a live Ollama server answers at
-settings.ollama_base_url — the normal test suite and CI never depend on
-Ollama being installed or running.
+Sergio). This can take many minutes per contact on CPU-only hardware, so it
+is gated on an explicit opt-in env var, not just on Ollama being reachable
+— on a machine where Ollama happens to already be running for something
+else, a plain `uv run pytest` must stay fast and must not silently balloon
+into a 20-minute run of real LLM calls. The normal test suite and CI never
+depend on this file at all.
 
 Run explicitly once Ollama is up and the configured model is pulled:
 
-    ollama pull llama3.1   # or whatever OLLAMA_MODEL is set to
+    ollama pull llama3.2   # or whatever OLLAMA_MODEL is set to
     ollama serve           # if not already running as a service
-    uv run pytest tests/test_lead_intelligence_ollama_integration.py -v -s
+    RUN_OLLAMA_INTEGRATION_TESTS=1 uv run pytest tests/test_lead_intelligence_ollama_integration.py -v -s
 """
 
+import os
 import uuid
 
 import httpx
@@ -25,6 +29,8 @@ from app.models.contact import Contact
 from app.schemas.user import CurrentUser
 from scripts.seed_demo_data import det_id, run_seed
 
+_OPT_IN_ENV_VAR = "RUN_OLLAMA_INTEGRATION_TESTS"
+
 
 def _ollama_is_reachable() -> bool:
     try:
@@ -34,10 +40,15 @@ def _ollama_is_reachable() -> bool:
         return False
 
 
-pytestmark = pytest.mark.skipif(
-    not _ollama_is_reachable(),
-    reason=f"No Ollama server reachable at {settings.ollama_base_url} — skipping real-local-LLM test",
-)
+if not os.environ.get(_OPT_IN_ENV_VAR):
+    pytestmark = pytest.mark.skip(
+        reason=f"Set {_OPT_IN_ENV_VAR}=1 to run this real-local-LLM test — it makes real, possibly slow Ollama calls."
+    )
+else:
+    pytestmark = pytest.mark.skipif(
+        not _ollama_is_reachable(),
+        reason=f"{_OPT_IN_ENV_VAR}=1 but no Ollama server reachable at {settings.ollama_base_url}",
+    )
 
 
 @pytest.fixture()
@@ -60,7 +71,11 @@ def test_agent_analyzes_a_real_demo_contact_via_ollama(db_session, demo_org_and_
     # `users` row is needed for this direct, in-process call.
     user = CurrentUser(id=uuid.uuid4(), email="demo@proppilot.app", organization_id=org.id, role="owner", provider="email")
 
-    provider = OllamaProvider(base_url=settings.ollama_base_url, model=settings.ollama_model, timeout=120.0)
+    # A generous ceiling, not the expected time: on CPU-only hardware (no
+    # GPU — see `ollama ps`'s PROCESSOR column) schema-constrained JSON
+    # generation is slow enough that the default OllamaProvider timeout
+    # (60s) isn't safe here, even with the smaller default model.
+    provider = OllamaProvider(base_url=settings.ollama_base_url, model=settings.ollama_model, timeout=180.0)
     result = LeadIntelligenceAgent(db_session, provider).analyze(user, contact.id)
 
     assert result.contact_id == contact.id

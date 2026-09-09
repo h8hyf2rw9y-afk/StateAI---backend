@@ -44,7 +44,12 @@ class Settings(BaseSettings):
 
     # Not hardcoded anywhere else in the app — every call site reads this.
     # Must already be pulled locally (`ollama pull <model>`) before use.
-    ollama_model: str = "llama3.1"
+    # llama3.2 (3B), not the larger llama3.1 (8B): on CPU-only hardware (no
+    # GPU) schema-constrained JSON generation with the 8B model routinely
+    # took several minutes per lead and sometimes still timed out — 3B is
+    # the practical choice for fast local iteration. Swap this per-machine
+    # if you have GPU acceleration and want the extra reasoning quality.
+    ollama_model: str = "llama3.2"
 
     # The Lead Intelligence Agent's production LLM provider — see
     # app/ai/llm/anthropic_provider.py. `None` (the default) means Anthropic
