@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.models.task import Task
 from app.repositories.buyer_requirement_repo import BuyerRequirementRepository
 from app.repositories.contact_repo import ContactRepository
+from app.repositories.opportunity_repo import OpportunityRepository
 from app.repositories.property_interest_repo import PropertyInterestRepository
 from app.repositories.property_repo import PropertyRepository
 from app.repositories.task_repo import TaskRepository
@@ -26,6 +27,7 @@ class TaskService:
         self.property_repo = PropertyRepository(db)
         self.buyer_requirement_repo = BuyerRequirementRepository(db)
         self.property_interest_repo = PropertyInterestRepository(db)
+        self.opportunity_repo = OpportunityRepository(db)
         self.audit = AuditService(db)
 
     def list(
@@ -37,6 +39,7 @@ class TaskService:
         assigned_to_user_id: uuid.UUID | None = None,
         contact_id: uuid.UUID | None = None,
         property_id: uuid.UUID | None = None,
+        opportunity_id: uuid.UUID | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[Task]:
@@ -47,6 +50,7 @@ class TaskService:
             assigned_to_user_id=assigned_to_user_id,
             contact_id=contact_id,
             property_id=property_id,
+            opportunity_id=opportunity_id,
             limit=limit,
             offset=offset,
         )
@@ -73,6 +77,8 @@ class TaskService:
             and self.property_interest_repo.get(organization_id, data.property_interest_id) is None
         ):
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Property interest not found.")
+        if data.opportunity_id is not None and self.opportunity_repo.get(organization_id, data.opportunity_id) is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Opportunity not found.")
 
     def create(self, organization_id: uuid.UUID, data: TaskCreate, actor_user_id: uuid.UUID | None) -> Task:
         self._validate_references(organization_id, data)

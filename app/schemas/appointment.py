@@ -11,6 +11,7 @@ class AppointmentBase(BaseModel):
     assigned_to_user_id: uuid.UUID | None = None
     contact_id: uuid.UUID | None = None
     property_id: uuid.UUID | None = None
+    opportunity_id: uuid.UUID | None = None
     title: str
     description: str | None = None
     start_at: datetime
@@ -36,6 +37,7 @@ class AppointmentUpdate(BaseModel):
     assigned_to_user_id: uuid.UUID | None = None
     contact_id: uuid.UUID | None = None
     property_id: uuid.UUID | None = None
+    opportunity_id: uuid.UUID | None = None
     title: str | None = None
     description: str | None = None
     start_at: datetime | None = None
@@ -52,6 +54,7 @@ class AppointmentRead(ORMModel):
     assigned_to_user_id: uuid.UUID | None
     contact_id: uuid.UUID | None
     property_id: uuid.UUID | None
+    opportunity_id: uuid.UUID | None
     title: str
     description: str | None
     start_at: datetime

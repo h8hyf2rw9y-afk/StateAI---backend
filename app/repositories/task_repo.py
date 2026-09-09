@@ -20,6 +20,7 @@ class TaskRepository(OrgScopedRepository[Task]):
         assigned_to_user_id: uuid.UUID | None = None,
         contact_id: uuid.UUID | None = None,
         property_id: uuid.UUID | None = None,
+        opportunity_id: uuid.UUID | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[Task]:
@@ -34,5 +35,7 @@ class TaskRepository(OrgScopedRepository[Task]):
             stmt = stmt.where(Task.contact_id == contact_id)
         if property_id is not None:
             stmt = stmt.where(Task.property_id == property_id)
+        if opportunity_id is not None:
+            stmt = stmt.where(Task.opportunity_id == opportunity_id)
         stmt = stmt.order_by(Task.due_at.asc()).limit(limit).offset(offset)
         return list(self.db.execute(stmt).scalars().all())

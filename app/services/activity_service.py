@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.models.activity import Activity
 from app.repositories.activity_repo import ActivityRepository
 from app.repositories.contact_repo import ContactRepository
+from app.repositories.opportunity_repo import OpportunityRepository
 from app.repositories.property_repo import PropertyRepository
 from app.schemas.activity import ActivityCreate, ActivityRead
 from app.services.audit_service import AuditService
@@ -20,6 +21,7 @@ class ActivityService:
         self.repo = ActivityRepository(db)
         self.contact_repo = ContactRepository(db)
         self.property_repo = PropertyRepository(db)
+        self.opportunity_repo = OpportunityRepository(db)
         self.audit = AuditService(db)
 
     def get_or_404(self, organization_id: uuid.UUID, activity_id: uuid.UUID) -> Activity:
@@ -39,6 +41,8 @@ class ActivityService:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Contact not found.")
         if data.property_id is not None and self.property_repo.get(organization_id, data.property_id) is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Property not found.")
+        if data.opportunity_id is not None and self.opportunity_repo.get(organization_id, data.opportunity_id) is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Opportunity not found.")
 
         activity = self.repo.create(
             organization_id,
@@ -87,4 +91,23 @@ class ActivityService:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Property not found.")
         return self.repo.list_for_property(
             organization_id, property_id, activity_type=activity_type, occurred_from=occurred_from, occurred_to=occurred_to
+        )
+
+    def list_for_opportunity(
+        self,
+        organization_id: uuid.UUID,
+        opportunity_id: uuid.UUID,
+        *,
+        activity_type: str | None = None,
+        occurred_from: datetime | None = None,
+        occurred_to: datetime | None = None,
+    ) -> list[Activity]:
+        if self.opportunity_repo.get(organization_id, opportunity_id) is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Opportunity not found.")
+        return self.repo.list_for_opportunity(
+            organization_id,
+            opportunity_id,
+            activity_type=activity_type,
+            occurred_from=occurred_from,
+            occurred_to=occurred_to,
         )

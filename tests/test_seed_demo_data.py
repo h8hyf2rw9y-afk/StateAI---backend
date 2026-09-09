@@ -8,11 +8,14 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.activity import Activity
+from app.models.appointment import Appointment
 from app.models.buyer_requirement import BuyerRequirement
 from app.models.contact import Contact, ContactRole
+from app.models.opportunity import Opportunity
 from app.models.property import Property
 from app.models.property_interest import PropertyInterest
-from scripts.seed_demo_data import ACTIVITIES, CONTACTS, det_id, run_seed
+from app.models.task import Task
+from scripts.seed_demo_data import ACTIVITIES, APPOINTMENTS, CONTACTS, OPPORTUNITIES, TASKS, det_id, run_seed
 
 
 def _counts(db_session: Session) -> dict[str, int]:
@@ -23,6 +26,9 @@ def _counts(db_session: Session) -> dict[str, int]:
         "buyer_requirements": db_session.scalar(select(func.count()).select_from(BuyerRequirement)),
         "property_interests": db_session.scalar(select(func.count()).select_from(PropertyInterest)),
         "activities": db_session.scalar(select(func.count()).select_from(Activity)),
+        "opportunities": db_session.scalar(select(func.count()).select_from(Opportunity)),
+        "tasks": db_session.scalar(select(func.count()).select_from(Task)),
+        "appointments": db_session.scalar(select(func.count()).select_from(Appointment)),
     }
 
 
@@ -34,9 +40,14 @@ def test_seed_matches_expected_counts(db_session: Session):
     assert counts["properties"] == 14
     assert counts["buyer_requirements"] == 13
     assert counts["property_interests"] == 10
-    assert counts["contact_roles"] == 21  # 20 "buyer" + Ricardo's extra "investor"
+    # 20 "buyer" + Ricardo's extra "investor" + Fernando's extra "seller" (he's
+    # both buying a new home and selling his current one — see OPPORTUNITIES).
+    assert counts["contact_roles"] == 22
     assert counts["activities"] == sum(len(entries) for entries in ACTIVITIES.values())
     assert set(ACTIVITIES.keys()) == {c["key"] for c in CONTACTS}  # every contact has a timeline
+    assert counts["opportunities"] == len(OPPORTUNITIES)
+    assert counts["tasks"] == len(TASKS)
+    assert counts["appointments"] == len(APPOINTMENTS)
 
 
 def test_seed_is_idempotent(db_session: Session):
@@ -99,6 +110,68 @@ def test_carlos_activity_timeline_is_chronological(db_session: Session):
     assert all(a is not None for a in activities)
     occurred_ats = [a.occurred_at for a in activities]
     assert occurred_ats == sorted(occurred_ats)  # stored oldest-first, matching ACTIVITIES' ordering
+
+
+def test_seed_won_and_lost_opportunities_have_closed_at(db_session: Session):
+    """Seeding writes rows directly (not through OpportunityService), so closed_at must be backfilled by hand for won/lost — this confirms that actually happened."""
+    run_seed(db_session)
+
+    won = db_session.get(Opportunity, det_id("opportunity:sergio-navarro:won"))
+    assert won is not None and won.stage == "won" and won.closed_at is not None
+
+    lost = db_session.get(Opportunity, det_id("opportunity:gabriela-ortiz:lost"))
+    assert lost is not None and lost.stage == "lost" and lost.closed_at is not None and lost.lost_reason
+
+
+def test_seed_gabriela_has_two_opportunities_over_time(db_session: Session):
+    """The exact "a contact may have multiple opportunities over time" scenario — her rejected opportunity and her new active search are separate rows, not one overwritten."""
+    run_seed(db_session)
+
+    lost = db_session.get(Opportunity, det_id("opportunity:gabriela-ortiz:lost"))
+    active = db_session.get(Opportunity, det_id("opportunity:gabriela-ortiz:buy"))
+    assert lost.contact_id == active.contact_id
+    assert lost.stage == "lost"
+    assert active.stage == "search"
+
+
+def test_seed_fernando_has_both_a_buy_and_a_sell_opportunity(db_session: Session):
+    """Buying a new home while selling his current one — both reference the same contact, distinct opportunity_type."""
+    run_seed(db_session)
+
+    buy = db_session.get(Opportunity, det_id("opportunity:fernando-vargas:buy"))
+    sell = db_session.get(Opportunity, det_id("opportunity:fernando-vargas:sell"))
+    assert buy.contact_id == sell.contact_id
+    assert buy.opportunity_type == "buy"
+    assert sell.opportunity_type == "sell"
+
+
+def test_seed_overdue_task_scenario(db_session: Session):
+    from datetime import datetime, timezone
+
+    run_seed(db_session)
+    task = db_session.get(Task, det_id("task:carlos-mendoza:follow-up"))
+    assert task is not None
+    assert task.status == "pending"
+    assert task.due_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc)
+    assert task.opportunity_id == det_id("opportunity:carlos-mendoza:buy")
+
+
+def test_seed_upcoming_appointment_scenario(db_session: Session):
+    from datetime import datetime, timezone
+
+    run_seed(db_session)
+    appointment = db_session.get(Appointment, det_id("appointment:natalia-ramirez:second-viewing"))
+    assert appointment is not None
+    assert appointment.start_at.replace(tzinfo=timezone.utc) > datetime.now(timezone.utc)
+    assert appointment.opportunity_id == det_id("opportunity:natalia-ramirez:buy")
+
+
+def test_seed_opportunity_has_linked_activity_history(db_session: Session):
+    """"Meaningful activity history" — Paola's opportunity has several of her existing activities linked via opportunity_id, not a duplicated/separate history."""
+    run_seed(db_session)
+    opportunity_id = det_id("opportunity:paola-rodriguez:buy")
+    linked = db_session.scalars(select(Activity).where(Activity.opportunity_id == opportunity_id)).all()
+    assert len(linked) >= 2
 
 
 def test_gabriela_activity_timeline_marks_the_transition(db_session: Session):

@@ -44,6 +44,13 @@ class Appointment(Base, UUIDPKMixin, TimestampMixin):
     property_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("properties.id", ondelete="SET NULL"), nullable=True
     )
+    # SET NULL — same reasoning as property_id above and Task.opportunity_id:
+    # an Opportunity is business history that's never hard-deleted in normal
+    # use, but a scheduled/completed appointment should stay a real record
+    # even in the rare case its linked opportunity is gone.
+    opportunity_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("opportunities.id", ondelete="SET NULL"), nullable=True
+    )
 
     title: Mapped[str] = mapped_column(nullable=False)
     description: Mapped[str | None] = mapped_column(nullable=True)
@@ -65,6 +72,7 @@ class Appointment(Base, UUIDPKMixin, TimestampMixin):
         Index("ix_appointments_organization_id", "organization_id"),
         Index("ix_appointments_contact_id", "contact_id"),
         Index("ix_appointments_property_id", "property_id"),
+        Index("ix_appointments_opportunity_id", "opportunity_id"),
         Index("ix_appointments_assigned_to_user_id", "assigned_to_user_id"),
         Index("ix_appointments_org_start_at", "organization_id", "start_at"),
         Index("ix_appointments_status", "status"),

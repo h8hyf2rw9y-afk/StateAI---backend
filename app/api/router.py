@@ -12,6 +12,7 @@ from app.api.routes import (
     features,
     me,
     notifications,
+    opportunities,
     properties,
     property_interests,
     tasks,
@@ -24,6 +25,7 @@ api_router.include_router(me.router)
 api_router.include_router(contacts.router)
 api_router.include_router(properties.router)
 api_router.include_router(buyer_requirements.router)
+api_router.include_router(opportunities.router)
 api_router.include_router(property_interests.router)
 api_router.include_router(activities.router)
 api_router.include_router(ai.router)

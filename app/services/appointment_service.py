@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.models.appointment import Appointment
 from app.repositories.appointment_repo import AppointmentRepository
 from app.repositories.contact_repo import ContactRepository
+from app.repositories.opportunity_repo import OpportunityRepository
 from app.repositories.property_repo import PropertyRepository
 from app.schemas.appointment import AppointmentCreate, AppointmentRead, AppointmentUpdate
 from app.services.audit_service import AuditService
@@ -41,6 +42,7 @@ class AppointmentService:
         self.repo = AppointmentRepository(db)
         self.contact_repo = ContactRepository(db)
         self.property_repo = PropertyRepository(db)
+        self.opportunity_repo = OpportunityRepository(db)
         self.audit = AuditService(db)
 
     def list(self, organization_id: uuid.UUID, **filters) -> list[Appointment]:
@@ -57,6 +59,8 @@ class AppointmentService:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Contact not found.")
         if data.property_id is not None and self.property_repo.get(organization_id, data.property_id) is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Property not found.")
+        if data.opportunity_id is not None and self.opportunity_repo.get(organization_id, data.opportunity_id) is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Opportunity not found.")
 
     def create(
         self, organization_id: uuid.UUID, data: AppointmentCreate, actor_user_id: uuid.UUID | None

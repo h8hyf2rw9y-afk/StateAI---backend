@@ -44,15 +44,18 @@ from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.models.activity import Activity
+from app.models.appointment import Appointment
 from app.models.buyer_requirement import (
     BuyerRequirement,
     BuyerRequirementFeature,
     BuyerRequirementLocation,
 )
 from app.models.contact import Contact, ContactRole
+from app.models.opportunity import Opportunity
 from app.models.organization import Organization, User
 from app.models.property import Property
 from app.models.property_interest import PropertyInterest
+from app.models.task import Task
 
 # ---------------------------------------------------------------------------
 # Deterministic IDs
@@ -78,6 +81,11 @@ def det_id(key: str) -> uuid.UUID:
 
 def days_ago(n: int) -> datetime:
     return datetime.now(timezone.utc) - timedelta(days=n)
+
+
+def in_days(n: int) -> datetime:
+    """Negative n gives a past (overdue) moment — used for the demo "overdue task" scenario."""
+    return datetime.now(timezone.utc) + timedelta(days=n)
 
 
 def upsert(session: Session, model_cls: type, id_: uuid.UUID, **fields: Any):
@@ -659,9 +667,134 @@ BUYER_REQUIREMENTS: list[dict[str, Any]] = [
     },
 ]
 
-# Every contact in this dataset is buyer-side; Ricardo is additionally an investor.
+# Every contact in this dataset is buyer-side; Ricardo is additionally an
+# investor, and Fernando is additionally a seller — see OPPORTUNITIES below,
+# where he's both buying a new home and selling his current one (the exact
+# "later sells their own property" scenario the Opportunity domain is meant
+# to represent — see app/models/opportunity.py).
 CONTACT_ROLES: dict[str, list[str]] = {c["key"]: ["buyer"] for c in CONTACTS}
 CONTACT_ROLES["ricardo-hernandez"].append("investor")
+CONTACT_ROLES["fernando-vargas"].append("seller")
+
+# ---------------------------------------------------------------------------
+# Opportunities — the actual sales processes an advisor is managing, on top
+# of the buyer requirements/property interests above. Deliberately reuses
+# existing contacts/properties/buyer requirements rather than inventing new
+# ones (see app/models/opportunity.py: "no duplicated client information").
+# Covers: an active buy search, negotiation, an offer, a viewing, a
+# property-selected buy, an active sell listing, a won deal, a lost deal,
+# and a contact with two opportunities over time (Gabriela: her rejected
+# Del Valle opportunity is separate from her new active search — same
+# transition already modeled by her buyer_requirement/property_interest
+# pair; Fernando: buying a new home while also selling his current one).
+#
+# `closed_days_ago`, when present, backfills `closed_at` directly — seeding
+# writes rows straight via SQLAlchemy (like every other entity in this
+# script), not through OpportunityService, so the auto-stamping that
+# service normally does on a real stage change has to be done by hand here.
+# ---------------------------------------------------------------------------
+
+OPPORTUNITIES: list[dict[str, Any]] = [
+    {
+        "key": "alejandro-torres:buy", "contact_key": "alejandro-torres", "opportunity_type": "buy",
+        "buyer_requirement_key": "alejandro-torres:1", "stage": "search",
+        "title": "Búsqueda de casa — Alejandro Torres",
+        "expected_value": Decimal("4500000"), "probability": 40, "days_ago": 2,
+    },
+    {
+        "key": "laura-gonzalez:buy", "contact_key": "laura-gonzalez", "opportunity_type": "buy",
+        "property_key": "casa-valle-oriente", "stage": "negotiation",
+        "title": "Negociación Casa Valle Oriente — Laura González",
+        "expected_value": Decimal("5200000"), "probability": 65, "days_ago": 12,
+    },
+    {
+        "key": "paola-rodriguez:buy", "contact_key": "paola-rodriguez", "opportunity_type": "buy",
+        "property_key": "casa-cumbres", "stage": "offer",
+        "title": "Oferta Casa Cumbres — Paola Rodríguez",
+        "expected_value": Decimal("5700000"), "probability": 55, "days_ago": 15,
+    },
+    {
+        "key": "natalia-ramirez:buy", "contact_key": "natalia-ramirez", "opportunity_type": "buy",
+        "property_key": "casa-carretera-nacional", "stage": "showing",
+        "title": "Visitas Casa Carretera Nacional — Natalia Ramírez",
+        "expected_value": Decimal("6400000"), "probability": 50, "days_ago": 9,
+    },
+    {
+        "key": "fernando-vargas:buy", "contact_key": "fernando-vargas", "opportunity_type": "buy",
+        "buyer_requirement_key": "fernando-vargas:1", "property_key": "casa-carretera-nacional",
+        "stage": "property_selected",
+        "title": "Compra de casa nueva — Fernando Vargas",
+        "expected_value": Decimal("6400000"), "probability": 60, "days_ago": 11,
+    },
+    {
+        "key": "fernando-vargas:sell", "contact_key": "fernando-vargas", "opportunity_type": "sell",
+        "property_key": "casa-cumbres-andres", "stage": "listing",
+        "title": "Venta de propiedad actual — Fernando Vargas",
+        "expected_value": Decimal("5600000"), "probability": 30, "days_ago": 6,
+    },
+    {
+        "key": "carolina-reyes:buy", "contact_key": "carolina-reyes", "opportunity_type": "buy",
+        "property_key": "casa-san-jeronimo", "stage": "negotiation",
+        "title": "Negociación Casa San Jerónimo — Carolina Reyes",
+        "expected_value": Decimal("4700000"), "probability": 60, "days_ago": 16,
+    },
+    {
+        "key": "sergio-navarro:won", "contact_key": "sergio-navarro", "opportunity_type": "buy",
+        "buyer_requirement_key": "sergio-navarro:2", "property_key": "casa-santa-catarina-sergio",
+        "stage": "won", "closed_days_ago": 1,
+        "title": "Compra cerrada — Sergio Navarro",
+        "expected_value": Decimal("4200000"), "probability": 100, "days_ago": 6,
+    },
+    {
+        "key": "gabriela-ortiz:lost", "contact_key": "gabriela-ortiz", "opportunity_type": "buy",
+        "property_key": "departamento-del-valle", "stage": "lost",
+        "lost_reason": "chose_another_property", "closed_days_ago": 10,
+        "title": "Departamento Del Valle — no avanzó",
+        "expected_value": Decimal("3300000"), "probability": 0, "days_ago": 18,
+    },
+    {
+        "key": "gabriela-ortiz:buy", "contact_key": "gabriela-ortiz", "opportunity_type": "buy",
+        "buyer_requirement_key": "gabriela-ortiz:1", "stage": "search",
+        "title": "Nueva búsqueda — Gabriela Ortiz",
+        "expected_value": Decimal("3500000"), "probability": 35, "days_ago": 10,
+    },
+    {
+        "key": "carlos-mendoza:buy", "contact_key": "carlos-mendoza", "opportunity_type": "buy",
+        "buyer_requirement_key": "carlos-mendoza:1", "stage": "qualification",
+        "title": "Seguimiento pendiente — Carlos Mendoza",
+        "expected_value": Decimal("5000000"), "probability": 30, "days_ago": 14,
+    },
+]
+
+# ---------------------------------------------------------------------------
+# Tasks — demo scenario: an overdue follow-up on Carlos's stalled opportunity
+# (matches his existing notes/activities: "sin respuesta desde hace 5 días").
+# ---------------------------------------------------------------------------
+
+TASKS: list[dict[str, Any]] = [
+    {
+        "key": "carlos-mendoza:follow-up", "contact_key": "carlos-mendoza",
+        "buyer_requirement_key": "carlos-mendoza:1", "opportunity_key": "carlos-mendoza:buy",
+        "title": "Seguimiento — sin respuesta hace 5 días", "task_type": "follow_up",
+        "priority": "high", "status": "pending", "due_in_days": -2,
+        "description": "Cliente de alto valor sin respuesta — requiere seguimiento urgente.",
+    },
+]
+
+# ---------------------------------------------------------------------------
+# Appointments — demo scenario: Natalia's already-agreed second viewing
+# (matches her existing activity: "pidió una segunda visita — ya agendada").
+# ---------------------------------------------------------------------------
+
+APPOINTMENTS: list[dict[str, Any]] = [
+    {
+        "key": "natalia-ramirez:second-viewing", "contact_key": "natalia-ramirez",
+        "property_key": "casa-carretera-nacional", "opportunity_key": "natalia-ramirez:buy",
+        "title": "Segunda visita — Casa Carretera Nacional", "appointment_type": "showing",
+        "status": "confirmed", "start_in_days": 2, "duration_hours": 1,
+        "description": "Segunda visita solicitada por la clienta.",
+    },
+]
 
 # ---------------------------------------------------------------------------
 # Activities — a chronological timeline per contact (oldest first), the
@@ -742,7 +875,7 @@ ACTIVITIES: dict[str, list[dict[str, Any]]] = {
         {"days_ago": 8, "activity_type": "property_viewing", "property_key": "casa-santa-catarina-sergio",
          "notes": "Visita a la segunda propiedad recomendada, en Santa Catarina."},
         {"days_ago": 5, "activity_type": "follow_up", "direction": "outbound",
-         "notes": "Seguimiento enviado — sin respuesta desde entonces."},
+         "notes": "Seguimiento enviado — sin respuesta desde entonces.", "opportunity_key": "carlos-mendoza:buy"},
     ],
     "laura-gonzalez": [
         {"days_ago": 12, "activity_type": "whatsapp", "direction": "inbound", "property_key": "casa-valle-oriente",
@@ -752,7 +885,8 @@ ACTIVITIES: dict[str, list[dict[str, Any]]] = {
         {"days_ago": 5, "activity_type": "note", "property_key": "casa-valle-oriente",
          "notes": "Cliente confirmó que le encantó la propiedad."},
         {"days_ago": 2, "activity_type": "negotiation", "direction": "outbound", "property_key": "casa-valle-oriente",
-         "notes": "Preguntó por posibilidad de negociar el precio — posible oferta."},
+         "notes": "Preguntó por posibilidad de negociar el precio — posible oferta.",
+         "opportunity_key": "laura-gonzalez:buy"},
     ],
     "miguel-herrera": [
         {"days_ago": 10, "activity_type": "call", "direction": "inbound",
@@ -766,11 +900,11 @@ ACTIVITIES: dict[str, list[dict[str, Any]]] = {
         {"days_ago": 15, "activity_type": "whatsapp", "direction": "inbound", "property_key": "casa-cumbres",
          "notes": "Consulta inicial sobre la propiedad."},
         {"days_ago": 11, "activity_type": "property_viewing", "property_key": "casa-cumbres",
-         "notes": "Visita a la propiedad."},
+         "notes": "Visita a la propiedad.", "opportunity_key": "paola-rodriguez:buy"},
         {"days_ago": 6, "activity_type": "offer", "direction": "inbound", "property_key": "casa-cumbres",
-         "notes": "Cliente envió una oferta informal."},
+         "notes": "Cliente envió una oferta informal.", "opportunity_key": "paola-rodriguez:buy"},
         {"days_ago": 3, "activity_type": "negotiation", "property_key": "casa-cumbres",
-         "notes": "El vendedor está revisando la oferta."},
+         "notes": "El vendedor está revisando la oferta.", "opportunity_key": "paola-rodriguez:buy"},
     ],
     "fernando-vargas": [
         {"days_ago": 11, "activity_type": "call", "direction": "inbound",
@@ -790,9 +924,11 @@ ACTIVITIES: dict[str, list[dict[str, Any]]] = {
         {"days_ago": 14, "activity_type": "property_viewing", "property_key": "departamento-del-valle",
          "notes": "Visita a la propiedad."},
         {"days_ago": 10, "activity_type": "note", "property_key": "departamento-del-valle",
-         "notes": "Cliente decidió que la propiedad no era para ella — no interesada."},
+         "notes": "Cliente decidió que la propiedad no era para ella — no interesada.",
+         "opportunity_key": "gabriela-ortiz:lost"},
         {"days_ago": 10, "activity_type": "follow_up", "direction": "outbound",
-         "notes": "Cliente sigue buscando — se inicia búsqueda con nuevos criterios (ver requerimiento de compra)."},
+         "notes": "Cliente sigue buscando — se inicia búsqueda con nuevos criterios (ver requerimiento de compra).",
+         "opportunity_key": "gabriela-ortiz:buy"},
     ],
     "sergio-navarro": [
         {"days_ago": 25, "activity_type": "call", "direction": "inbound",
@@ -808,9 +944,9 @@ ACTIVITIES: dict[str, list[dict[str, Any]]] = {
         {"days_ago": 9, "activity_type": "whatsapp", "direction": "inbound", "property_key": "casa-carretera-nacional",
          "notes": "Consulta inicial sobre la propiedad."},
         {"days_ago": 5, "activity_type": "property_viewing", "property_key": "casa-carretera-nacional",
-         "notes": "Primera visita completada."},
+         "notes": "Primera visita completada.", "opportunity_key": "natalia-ramirez:buy"},
         {"days_ago": 1, "activity_type": "follow_up", "direction": "inbound", "property_key": "casa-carretera-nacional",
-         "notes": "Cliente solicitó una segunda visita — ya agendada."},
+         "notes": "Cliente solicitó una segunda visita — ya agendada.", "opportunity_key": "natalia-ramirez:buy"},
     ],
     "eduardo-jimenez": [
         {"days_ago": 21, "activity_type": "call", "direction": "inbound",
@@ -824,9 +960,9 @@ ACTIVITIES: dict[str, list[dict[str, Any]]] = {
         {"days_ago": 7, "activity_type": "follow_up", "direction": "outbound", "property_key": "casa-san-jeronimo",
          "notes": "Seguimiento completado."},
         {"days_ago": 4, "activity_type": "note", "property_key": "casa-san-jeronimo",
-         "notes": "Cliente pidió el precio final."},
+         "notes": "Cliente pidió el precio final.", "opportunity_key": "carolina-reyes:buy"},
         {"days_ago": 2, "activity_type": "negotiation", "property_key": "casa-san-jeronimo",
-         "notes": "Cliente está considerando hacer una oferta."},
+         "notes": "Cliente está considerando hacer una oferta.", "opportunity_key": "carolina-reyes:buy"},
     ],
 }
 
@@ -995,12 +1131,14 @@ def seed_activities(
     org_id: uuid.UUID,
     contacts: dict[str, Contact],
     properties: dict[str, Property],
+    opportunities: dict[str, Opportunity],
     created_by_user_id: uuid.UUID | None,
 ) -> None:
     for contact_key, entries in ACTIVITIES.items():
         contact = contacts[contact_key]
         for i, entry in enumerate(entries, start=1):
             property_key = entry.get("property_key")
+            opportunity_key = entry.get("opportunity_key")
             upsert(
                 session,
                 Activity,
@@ -1008,6 +1146,7 @@ def seed_activities(
                 organization_id=org_id,
                 contact_id=contact.id,
                 property_id=properties[property_key].id if property_key else None,
+                opportunity_id=opportunities[opportunity_key].id if opportunity_key else None,
                 created_by_user_id=created_by_user_id,
                 activity_type=entry["activity_type"],
                 direction=entry.get("direction"),
@@ -1018,6 +1157,108 @@ def seed_activities(
     session.flush()
 
 
+def seed_opportunities(
+    session: Session,
+    org_id: uuid.UUID,
+    contacts: dict[str, Contact],
+    properties: dict[str, Property],
+    owner_user_id: uuid.UUID | None,
+) -> dict[str, Opportunity]:
+    """
+    Buyer requirement ids are resolved directly via det_id() rather than a
+    returned dict — seed_buyer_requirements() doesn't build one (it has no
+    other caller that needs it), and every id here is deterministic anyway,
+    so there's nothing a lookup dict would add over recomputing the same id.
+    """
+    opportunities: dict[str, Opportunity] = {}
+    for o in OPPORTUNITIES:
+        opportunity_id = det_id(f"opportunity:{o['key']}")
+        fields = {
+            "organization_id": org_id,
+            "contact_id": contacts[o["contact_key"]].id,
+            "property_id": properties[o["property_key"]].id if o.get("property_key") else None,
+            "buyer_requirement_id": (
+                det_id(f"buyer-requirement:{o['buyer_requirement_key']}") if o.get("buyer_requirement_key") else None
+            ),
+            "opportunity_type": o["opportunity_type"],
+            "stage": o["stage"],
+            "title": o["title"],
+            "expected_value": o.get("expected_value"),
+            "probability": o.get("probability"),
+            "lost_reason": o.get("lost_reason"),
+            "owner_user_id": owner_user_id,
+            "created_by_user_id": owner_user_id,
+            "created_at": days_ago(o["days_ago"]),
+        }
+        if "closed_days_ago" in o:
+            fields["closed_at"] = days_ago(o["closed_days_ago"])
+        opportunities[o["key"]] = upsert(session, Opportunity, opportunity_id, **fields)
+    session.flush()
+    return opportunities
+
+
+def seed_tasks(
+    session: Session,
+    org_id: uuid.UUID,
+    contacts: dict[str, Contact],
+    opportunities: dict[str, Opportunity],
+    assignee_user_id: uuid.UUID | None,
+) -> None:
+    for t in TASKS:
+        upsert(
+            session,
+            Task,
+            det_id(f"task:{t['key']}"),
+            organization_id=org_id,
+            contact_id=contacts[t["contact_key"]].id if t.get("contact_key") else None,
+            buyer_requirement_id=(
+                det_id(f"buyer-requirement:{t['buyer_requirement_key']}") if t.get("buyer_requirement_key") else None
+            ),
+            opportunity_id=opportunities[t["opportunity_key"]].id if t.get("opportunity_key") else None,
+            assigned_to_user_id=assignee_user_id,
+            created_by_user_id=assignee_user_id,
+            title=t["title"],
+            description=t.get("description"),
+            task_type=t["task_type"],
+            status=t.get("status", "pending"),
+            priority=t.get("priority", "medium"),
+            due_at=in_days(t["due_in_days"]),
+            created_at=days_ago(2),
+        )
+    session.flush()
+
+
+def seed_appointments(
+    session: Session,
+    org_id: uuid.UUID,
+    contacts: dict[str, Contact],
+    properties: dict[str, Property],
+    opportunities: dict[str, Opportunity],
+    assignee_user_id: uuid.UUID | None,
+) -> None:
+    for a in APPOINTMENTS:
+        start = in_days(a["start_in_days"])
+        upsert(
+            session,
+            Appointment,
+            det_id(f"appointment:{a['key']}"),
+            organization_id=org_id,
+            contact_id=contacts[a["contact_key"]].id if a.get("contact_key") else None,
+            property_id=properties[a["property_key"]].id if a.get("property_key") else None,
+            opportunity_id=opportunities[a["opportunity_key"]].id if a.get("opportunity_key") else None,
+            assigned_to_user_id=assignee_user_id,
+            created_by_user_id=assignee_user_id,
+            title=a["title"],
+            description=a.get("description"),
+            appointment_type=a["appointment_type"],
+            status=a.get("status", "scheduled"),
+            start_at=start,
+            end_at=start + timedelta(hours=a.get("duration_hours", 1)),
+            created_at=days_ago(2),
+        )
+    session.flush()
+
+
 def run_seed(session: Session) -> Organization:
     org, creator_user_id = seed_organization(session)
     properties = seed_properties(session, org.id)
@@ -1025,7 +1266,10 @@ def run_seed(session: Session) -> Organization:
     seed_contact_roles(session, contacts)
     seed_property_interests(session, org.id, contacts, properties)
     seed_buyer_requirements(session, org.id, contacts)
-    seed_activities(session, org.id, contacts, properties, creator_user_id)
+    opportunities = seed_opportunities(session, org.id, contacts, properties, creator_user_id)
+    seed_activities(session, org.id, contacts, properties, opportunities, creator_user_id)
+    seed_tasks(session, org.id, contacts, opportunities, creator_user_id)
+    seed_appointments(session, org.id, contacts, properties, opportunities, creator_user_id)
     session.commit()
     return org
 
@@ -1033,11 +1277,12 @@ def run_seed(session: Session) -> Organization:
 def run_reset(session: Session) -> None:
     """
     Deletes the demo organization row. Every child table (contacts,
-    properties, buyer_requirements, property_interests, and in turn
-    contact_roles/property_features/buyer_requirement_locations/
-    buyer_requirement_features) has ondelete="CASCADE" back to organizations
-    — see app/models/ — so this one statement removes the entire demo
-    dataset without needing to touch every table by hand.
+    properties, buyer_requirements, property_interests, opportunities,
+    tasks, appointments, and in turn contact_roles/property_features/
+    buyer_requirement_locations/buyer_requirement_features) has
+    ondelete="CASCADE" back to organizations — see app/models/ — so this one
+    statement removes the entire demo dataset without needing to touch
+    every table by hand.
     """
     session.execute(text("DELETE FROM organizations WHERE id = :id"), {"id": det_id(DEMO_ORG_KEY)})
     session.commit()
@@ -1063,7 +1308,10 @@ def print_summary(session: Session, org: Organization) -> None:
     print(f"  properties:          {count('properties')}")
     print(f"  buyer_requirements:  {count('buyer_requirements')}")
     print(f"  property_interests:  {count('property_interests')}")
+    print(f"  opportunities:       {count('opportunities')}")
     print(f"  activities:          {count('activities')}")
+    print(f"  tasks:               {count('tasks')}")
+    print(f"  appointments:        {count('appointments')}")
 
 
 def main() -> None:

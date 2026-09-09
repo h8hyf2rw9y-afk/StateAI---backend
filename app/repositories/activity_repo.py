@@ -44,6 +44,23 @@ class ActivityRepository(OrgScopedRepository[Activity]):
         stmt = stmt.order_by(Activity.occurred_at.desc())
         return list(self.db.execute(stmt).scalars().all())
 
+    def list_for_opportunity(
+        self,
+        organization_id: uuid.UUID,
+        opportunity_id: uuid.UUID,
+        *,
+        activity_type: str | None = None,
+        occurred_from: datetime | None = None,
+        occurred_to: datetime | None = None,
+    ) -> list[Activity]:
+        """Oldest-first — "the story of this deal," same ordering as a contact's own timeline (list_for_contact)."""
+        stmt = select(Activity).where(
+            Activity.organization_id == organization_id, Activity.opportunity_id == opportunity_id
+        )
+        stmt = self._apply_filters(stmt, activity_type, occurred_from, occurred_to)
+        stmt = stmt.order_by(Activity.occurred_at.asc())
+        return list(self.db.execute(stmt).scalars().all())
+
     @staticmethod
     def _apply_filters(stmt, activity_type: str | None, occurred_from: datetime | None, occurred_to: datetime | None):
         if activity_type is not None:

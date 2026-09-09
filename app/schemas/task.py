@@ -13,6 +13,7 @@ class TaskBase(BaseModel):
     property_id: uuid.UUID | None = None
     buyer_requirement_id: uuid.UUID | None = None
     property_interest_id: uuid.UUID | None = None
+    opportunity_id: uuid.UUID | None = None
     title: str
     description: str | None = None
     task_type: TaskType
@@ -32,6 +33,7 @@ class TaskUpdate(BaseModel):
     property_id: uuid.UUID | None = None
     buyer_requirement_id: uuid.UUID | None = None
     property_interest_id: uuid.UUID | None = None
+    opportunity_id: uuid.UUID | None = None
     title: str | None = None
     description: str | None = None
     task_type: TaskType | None = None
@@ -50,6 +52,7 @@ class TaskRead(ORMModel):
     property_id: uuid.UUID | None
     buyer_requirement_id: uuid.UUID | None
     property_interest_id: uuid.UUID | None
+    opportunity_id: uuid.UUID | None
     title: str
     description: str | None
     task_type: str

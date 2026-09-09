@@ -20,6 +20,7 @@ def list_tasks(
     assigned_to_user_id: uuid.UUID | None = Query(None),
     contact_id: uuid.UUID | None = Query(None),
     property_id: uuid.UUID | None = Query(None),
+    opportunity_id: uuid.UUID | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     current_user: CurrentUser = Depends(get_current_org_user),
@@ -32,6 +33,7 @@ def list_tasks(
         assigned_to_user_id=assigned_to_user_id,
         contact_id=contact_id,
         property_id=property_id,
+        opportunity_id=opportunity_id,
         limit=limit,
         offset=offset,
     )

@@ -46,6 +46,14 @@ class Task(Base, UUIDPKMixin, TimestampMixin):
     property_interest_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("property_interests.id", ondelete="CASCADE"), nullable=True
     )
+    # SET NULL, not CASCADE like the four above: unlike those, an
+    # Opportunity is business history that's never hard-deleted in normal
+    # use (see app/models/opportunity.py) — but a task tied to one that
+    # somehow disappears should stay visible as an unlinked task rather
+    # than vanishing, since the work itself may still need doing.
+    opportunity_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("opportunities.id", ondelete="SET NULL"), nullable=True
+    )
 
     title: Mapped[str] = mapped_column(nullable=False)
     description: Mapped[str | None] = mapped_column(nullable=True)
@@ -64,6 +72,7 @@ class Task(Base, UUIDPKMixin, TimestampMixin):
         Index("ix_tasks_property_id", "property_id"),
         Index("ix_tasks_buyer_requirement_id", "buyer_requirement_id"),
         Index("ix_tasks_property_interest_id", "property_interest_id"),
+        Index("ix_tasks_opportunity_id", "opportunity_id"),
         Index("ix_tasks_assigned_to_user_id", "assigned_to_user_id"),
         Index("ix_tasks_org_status_due", "organization_id", "status", "due_at"),
     )

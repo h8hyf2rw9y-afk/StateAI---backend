@@ -19,6 +19,7 @@ class AppointmentRepository(OrgScopedRepository[Appointment]):
         status: str | None = None,
         contact_id: uuid.UUID | None = None,
         property_id: uuid.UUID | None = None,
+        opportunity_id: uuid.UUID | None = None,
         assigned_to_user_id: uuid.UUID | None = None,
         start_from: datetime | None = None,
         start_to: datetime | None = None,
@@ -32,6 +33,8 @@ class AppointmentRepository(OrgScopedRepository[Appointment]):
             stmt = stmt.where(Appointment.contact_id == contact_id)
         if property_id is not None:
             stmt = stmt.where(Appointment.property_id == property_id)
+        if opportunity_id is not None:
+            stmt = stmt.where(Appointment.opportunity_id == opportunity_id)
         if assigned_to_user_id is not None:
             stmt = stmt.where(Appointment.assigned_to_user_id == assigned_to_user_id)
         if start_from is not None:

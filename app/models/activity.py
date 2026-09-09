@@ -36,6 +36,13 @@ class Activity(Base, UUIDPKMixin, TimestampMixin):
     property_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("properties.id", ondelete="SET NULL"), nullable=True
     )
+    # SET NULL, not CASCADE: an Opportunity is business history that's
+    # never hard-deleted in normal use (see app/models/opportunity.py), but
+    # if it ever is, the activities that happened along the way remain real
+    # historical fact — same reasoning as property_id above.
+    opportunity_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("opportunities.id", ondelete="SET NULL"), nullable=True
+    )
     created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -51,6 +58,7 @@ class Activity(Base, UUIDPKMixin, TimestampMixin):
         Index("ix_activities_organization_id", "organization_id"),
         Index("ix_activities_contact_id", "contact_id"),
         Index("ix_activities_property_id", "property_id"),
+        Index("ix_activities_opportunity_id", "opportunity_id"),
         Index("ix_activities_activity_type", "activity_type"),
         Index("ix_activities_occurred_at", "occurred_at"),
         Index("ix_activities_contact_occurred", "contact_id", "occurred_at"),

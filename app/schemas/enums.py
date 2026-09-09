@@ -129,9 +129,11 @@ ACTIVITY_TYPES: tuple[str, ...] = (
     "note",
     "offer",
     "negotiation",
+    "stage_change",
 )
 ActivityType = Literal[
-    "call", "whatsapp", "email", "property_viewing", "follow_up", "meeting", "note", "offer", "negotiation"
+    "call", "whatsapp", "email", "property_viewing", "follow_up", "meeting", "note", "offer", "negotiation",
+    "stage_change",
 ]
 
 ACTIVITY_DIRECTIONS: tuple[str, ...] = ("inbound", "outbound")
@@ -236,4 +238,81 @@ NOTIFICATION_TYPES: tuple[str, ...] = (
 )
 NotificationType = Literal[
     "task_due", "appointment_upcoming", "follow_up_reminder", "document_deadline", "contract_deadline", "system",
+]
+
+# app/models/opportunity.py — the two sales processes this CRM actively
+# manages today. "rent" deliberately excluded even though
+# BuyerRequirementPurpose already supports it for a *requirement*: nothing
+# in the current stage lifecycle below was designed around a lease-signing
+# workflow (distinct from a sale's closing), so adding it now would be
+# speculative — extend this the same one-line way once a real rental
+# pipeline is needed.
+OPPORTUNITY_TYPES: tuple[str, ...] = ("buy", "sell")
+OpportunityType = Literal["buy", "sell"]
+
+# One shared, superset stage enum rather than two separate ones — see
+# app/services/opportunity_service.py's docstring for the full reasoning.
+# In short: a BUY and a SELL pipeline are the *same* pipeline for most of
+# their length (offer -> negotiation -> reservation -> contract -> closing
+# -> won/lost) and diverge only at the very start (search vs.
+# listing/marketing) — two entirely separate enums would duplicate 8 of 13
+# values for no benefit. OPPORTUNITY_STAGES_BY_TYPE below (not a second
+# enum) is what actually keeps a BUY opportunity out of a SELL-only stage.
+OPPORTUNITY_STAGES: tuple[str, ...] = (
+    "qualification",
+    "search",              # buy-only — actively searching for a matching property
+    "listing",              # sell-only — property listed with the agency
+    "marketing",              # sell-only — actively promoting the listing
+    "property_selected",       # buy-only — a specific property has been chosen to pursue
+    "showing",                   # shared — a buyer's viewing IS the seller's showing, same event
+    "offer",
+    "negotiation",
+    "reservation",
+    "contract",
+    "closing",
+    "won",
+    "lost",
+)
+OpportunityStage = Literal[
+    "qualification", "search", "listing", "marketing", "property_selected", "showing",
+    "offer", "negotiation", "reservation", "contract", "closing", "won", "lost",
+]
+
+# Which of the shared stages above are meaningful for each opportunity_type
+# — enforced in OpportunityService so a BUY opportunity can't be set to
+# "listing" (or a SELL one to "search"). Every other stage is shared.
+OPPORTUNITY_STAGES_BY_TYPE: dict[str, tuple[str, ...]] = {
+    "buy": (
+        "qualification", "search", "property_selected", "showing", "offer", "negotiation",
+        "reservation", "contract", "closing", "won", "lost",
+    ),
+    "sell": (
+        "qualification", "listing", "marketing", "showing", "offer", "negotiation",
+        "reservation", "contract", "closing", "won", "lost",
+    ),
+}
+
+# The two terminal stages — an opportunity in either is "closed" (see
+# OpportunityRepository.list's is_closed filter and OpportunityService's
+# closed_at/lost_reason auto-handling).
+OPPORTUNITY_CLOSED_STAGES: frozenset[str] = frozenset({"won", "lost"})
+
+# app/models/opportunity.py's lost_reason — structured, not free text, on
+# purpose: "which deals were lost and why" (a named AI-readiness
+# requirement) needs to be answerable by grouping/counting, not by an LLM
+# parsing prose. Required whenever stage is set to "lost" — see
+# OpportunityService._validate_lost_reason.
+OPPORTUNITY_LOST_REASONS: tuple[str, ...] = (
+    "price",
+    "financing_denied",
+    "chose_another_property",
+    "chose_competitor",
+    "unresponsive",
+    "changed_mind",
+    "timeline_changed",
+    "other",
+)
+OpportunityLostReason = Literal[
+    "price", "financing_denied", "chose_another_property", "chose_competitor",
+    "unresponsive", "changed_mind", "timeline_changed", "other",
 ]

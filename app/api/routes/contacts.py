@@ -10,11 +10,13 @@ from app.schemas.activity import ActivityCreate, ActivityRead
 from app.schemas.buyer_requirement import BuyerRequirementCreate, BuyerRequirementRead
 from app.schemas.contact import ContactCreate, ContactRead, ContactRoleAssign, ContactUpdate
 from app.schemas.enums import ActivityType
+from app.schemas.opportunity import OpportunityCreate, OpportunityRead
 from app.schemas.property_interest import PropertyInterestCreate, PropertyInterestRead
 from app.schemas.user import CurrentUser
 from app.services.activity_service import ActivityService
 from app.services.buyer_requirement_service import BuyerRequirementService
 from app.services.contact_service import ContactService
+from app.services.opportunity_service import OpportunityService
 from app.services.property_interest_service import PropertyInterestService
 
 router = APIRouter(prefix="/contacts", tags=["contacts"])
@@ -129,6 +131,25 @@ def create_contact_property_interest(
     db: Session = Depends(get_db),
 ) -> PropertyInterestRead:
     return PropertyInterestService(db).create(current_user.organization_id, contact_id, data)
+
+
+@router.get("/{contact_id}/opportunities", response_model=list[OpportunityRead])
+def list_contact_opportunities(
+    contact_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_org_user),
+    db: Session = Depends(get_db),
+) -> list[OpportunityRead]:
+    return OpportunityService(db).list_for_contact(current_user.organization_id, contact_id)
+
+
+@router.post("/{contact_id}/opportunities", response_model=OpportunityRead, status_code=status.HTTP_201_CREATED)
+def create_contact_opportunity(
+    contact_id: uuid.UUID,
+    data: OpportunityCreate,
+    current_user: CurrentUser = Depends(get_current_org_user),
+    db: Session = Depends(get_db),
+) -> OpportunityRead:
+    return OpportunityService(db).create(current_user.organization_id, contact_id, data, actor_user_id=current_user.id)
 
 
 @router.get("/{contact_id}/activities", response_model=list[ActivityRead])

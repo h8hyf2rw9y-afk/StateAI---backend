@@ -20,11 +20,11 @@ Este repositorio contiene el **backend** del proyecto (la API y la lógica de se
 
 ## Status
 
-🚧 **Core CRM (Contacts/Properties/Buyer Requirements/Property Interests/Activities/Features) + two read-only AI agents (Lead Intelligence, Follow-up) behind an AI Gateway + a production-readiness hardening pass** (Audit Log, AI execution persistence, Tasks, Appointments, a prepared-but-stubbed Calendar Integration layer, a Notification foundation, minimal role authorization, and global structured error handling) — live on the real Supabase Postgres database, seeded with realistic demo data, and covered by 192 passing tests. Still no Transactions, Commissions, Documents, real OAuth calendar sync, or notification delivery (email/push/SMS) — see [What's next](#whats-next) for exactly what's real versus prepared-but-not-implemented.
+🚧 **Core CRM (Contacts/Properties/Buyer Requirements/Property Interests/Activities/Features) + the sales Pipeline (Opportunities) + two read-only AI agents (Lead Intelligence, Follow-up) behind an AI Gateway + a production-readiness hardening pass** (Audit Log, AI execution persistence, Tasks, Appointments, a prepared-but-stubbed Calendar Integration layer, a Notification foundation, minimal role authorization, and global structured error handling) — live on the real Supabase Postgres database, seeded with realistic demo data, and covered by 232 passing tests. Still no Transactions, Commissions, Documents, real OAuth calendar sync, notification delivery (email/push/SMS), or any AI agent that consumes/acts on the Pipeline — see [What's next](#whats-next) for exactly what's real versus prepared-but-not-implemented.
 
 ## Core architectural principle
 
-The schema is **not** built around a generic "Lead" entity. A **Contact** is the central person/entity; leads, buyer requirements, property interests, and (eventually) opportunities/transactions are relationships and processes involving a Contact over time. A person can hold multiple roles (buyer, seller, investor...) and have several buyer requirements across their relationship with the agency — the same Contact never needs to be recreated.
+The schema is **not** built around a generic "Lead" entity. A **Contact** is the central person/entity; leads, buyer requirements, property interests, opportunities, and (eventually) transactions are relationships and processes involving a Contact over time. A person can hold multiple roles (buyer, seller, investor...) and have several buyer requirements — and several **Opportunities** (see below) — across their relationship with the agency — the same Contact never needs to be recreated.
 
 Two fundamentally different ways a Contact enters the CRM, both modeled explicitly:
 
@@ -68,6 +68,8 @@ app/
   services/                 # business logic on top of repositories, including:
     audit_service.py            # the one reusable audit-log write path — see Audit Logging
     agent_execution_service.py     # AgentExecution persistence — see AI Execution Persistence
+    opportunity_service.py            # stage validation, won/lost/reopen handling, stage-change
+                                         # Activity creation — see Opportunities / Pipeline
   ai/
     lead_context_tool.py      # get_lead_context — the AI Context Layer's tool
     gateway.py                    # AIGateway — orchestrates agents; deliberately never touches the database
@@ -77,8 +79,8 @@ app/
                                  # Calendar Integration Architecture. Nothing here is called by any route today.
   api/
     routes/                    # one module per resource (health, me, contacts, properties,
-                                  # buyer_requirements, property_interests, activities, features, ai,
-                                  # agent_executions, audit_logs, tasks, appointments,
+                                  # buyer_requirements, opportunities, property_interests, activities,
+                                  # features, ai, agent_executions, audit_logs, tasks, appointments,
                                   # calendar_connections, notifications)
     router.py                     # aggregates routers under /api/v1 (health/  is mounted unversioned)
 alembic/
@@ -94,8 +96,9 @@ tests/
   test_matching_api.py                  # Use Cases 1-5 end to end, including the matching hard filters
   test_audit_log.py                        # audit record creation, actor tracking, before/after, isolation
   test_agent_execution.py                     # AI execution persistence, success/failure, isolation
-  test_tasks_api.py                              # Task CRUD, lifecycle, cross-org references, isolation
-  test_appointments_api.py                          # Appointment CRUD, lifecycle, isolation
+  test_opportunities_api.py                      # BUY/SELL creation, stage changes, won/lost/reopen, isolation
+  test_tasks_api.py                                 # Task CRUD, lifecycle, cross-org references, isolation
+  test_appointments_api.py                             # Appointment CRUD, lifecycle, isolation
   test_notifications_api.py                            # personal ownership, unread filtering
   test_calendar_connections_api.py                        # connection registration, personal ownership
   test_authorization.py                                      # require_role, and the routes that use it
@@ -123,11 +126,12 @@ Every business table (except the two catalogs and the join tables) carries `orga
 | `buyer_requirement_locations` | A requirement can list several acceptable areas, ranked by `priority` — never a single free-text field. |
 | `buyer_requirement_features` | Catalog junction with a `classification`: `must_have` / `preferred` / `deal_breaker`. |
 | `property_interests` | Case A — a Contact's interest in one specific Property. Not unique on `(contact_id, property_id)`: a contact can lose and regain interest over time, and that history is kept. |
-| `activities` | A structured, chronological record of what actually happened with a Contact (call, WhatsApp, viewing, offer, …) — `property_id` optional (only set when the activity is about a specific listing), `created_by_user_id` optional. `occurred_at` is a business timestamp (*when it happened*), separate from the inherited `created_at`/`updated_at` audit trail (*when the row was logged*) — the same split `property_interests` already uses via `first_contact_at`/`last_contact_at`. This is what replaces free-text `notes` as the CRM's real timeline; see [Activities](#activities). |
+| `opportunities` | The actual sales process an advisor is managing (BUY or SELL) — see [Opportunities / Pipeline](#opportunities--pipeline). Distinct from BuyerRequirement/PropertyInterest, which describe intent/interest, not an actively-managed deal. |
+| `activities` | A structured, chronological record of what actually happened with a Contact (call, WhatsApp, viewing, offer, stage change, …) — `property_id`/`opportunity_id` both optional (set when the activity is about a specific listing/deal), `created_by_user_id` optional. `occurred_at` is a business timestamp (*when it happened*), separate from the inherited `created_at`/`updated_at` audit trail (*when the row was logged*) — the same split `property_interests` already uses via `first_contact_at`/`last_contact_at`. This is what replaces free-text `notes` as the CRM's real timeline; see [Activities](#activities). |
 | `audit_logs` | "Who changed what, when" — see [Audit Logging](#audit-logging). |
 | `agent_executions` | "What did the AI recommend, when, did anyone act on it" — see [AI Execution Persistence](#ai-execution-persistence). |
-| `tasks` | "Something that needs to happen" (follow-up, call, document deadline, …) — see [Tasks & Reminders](#tasks--reminders). Distinct from `activities` ("something that already happened"). |
-| `appointments` | A scheduled/planned event (showing, notary, signing, …) — see [Appointments](#appointments). Distinct from `activities` (what happened) and `tasks` (an open action item). |
+| `tasks` | "Something that needs to happen" (follow-up, call, document deadline, …) — see [Tasks & Reminders](#tasks--reminders). Distinct from `activities` ("something that already happened"). Optional `opportunity_id`. |
+| `appointments` | A scheduled/planned event (showing, notary, signing, …) — see [Appointments](#appointments). Distinct from `activities` (what happened) and `tasks` (an open action item). Optional `opportunity_id`. |
 | `calendar_connections` | Metadata-only record of a user's intent to sync with Google/Apple/Notion — **no token columns exist** (see [Calendar Integration Architecture](#calendar-integration-architecture)). |
 | `notifications` | An in-app notification record for one user — see [Notifications Architecture](#notifications-architecture). |
 
@@ -139,13 +143,41 @@ Every business table (except the two catalogs and the join tables) carries `orga
 
 The CRM's actual timeline — "what happened with this contact" — as a normalized, queryable log instead of a free-text `notes` field. This is the primary context source future agents (Lead Intelligence, Follow-up, Sales Copilot) will read from.
 
-**Fields, and what was deliberately left out**: `activity_type` (soft enum: `call`/`whatsapp`/`email`/`property_viewing`/`follow_up`/`meeting`/`note`/`offer`/`negotiation`), optional `direction` (`inbound`/`outbound`), required `contact_id`, optional `property_id`, optional `created_by_user_id`, required `occurred_at` + `notes`. No `status` — an Activity is something that *already happened*; it has no lifecycle (a future Appointments module, for things not yet happened, is where scheduling status belongs). No `subject` — one content field is enough for now. No speculative `metadata` JSON column. Activities are append-only (no `PATCH`/`DELETE` routes) — a real CRM history log isn't edited, a correction is a new entry.
+**Fields, and what was deliberately left out**: `activity_type` (soft enum: `call`/`whatsapp`/`email`/`property_viewing`/`follow_up`/`meeting`/`note`/`offer`/`negotiation`/`stage_change` — the last written automatically by `OpportunityService`, never by a client), optional `direction` (`inbound`/`outbound`), required `contact_id`, optional `property_id`, optional `opportunity_id` (see [Opportunities / Pipeline](#opportunities--pipeline)), optional `created_by_user_id`, required `occurred_at` + `notes`. No `status` — an Activity is something that *already happened*; it has no lifecycle (Appointments, for things not yet happened, is where scheduling status belongs). No `subject` — one content field is enough for now. No speculative `metadata` JSON column. Activities are append-only (no `PATCH`/`DELETE` routes) — a real CRM history log isn't edited, a correction is a new entry.
 
-Endpoints: `POST`/`GET /contacts/{id}/activities` (create; the timeline, oldest-first, filterable by `activity_type`/`occurred_from`/`occurred_to`), `GET /properties/{id}/activities` (most-recent-first), `GET /activities/{id}`.
+Endpoints: `POST`/`GET /contacts/{id}/activities` (create; the timeline, oldest-first, filterable by `activity_type`/`occurred_from`/`occurred_to`), `GET /properties/{id}/activities` (most-recent-first), `GET /opportunities/{id}/activities` (oldest-first — the deal's own story), `GET /activities/{id}`.
+
+## Opportunities / Pipeline
+
+An **Opportunity** is the actual sales process an advisor is actively managing — distinct from both `BuyerRequirement` ("what a contact is looking for") and `PropertyInterest` ("a contact's interest in one specific listing"), neither of which implies anyone is actively working a deal yet. A Contact can have **several Opportunities over time** — tried to buy one house and lost it, is now searching again, later sells their own property — each its own row, never overwritten in place (the demo data's Gabriela and Fernando both do this; see [Demo data](#demo-data)).
+
+**Two types, one shared stage enum.** `opportunity_type` is `buy` or `sell` (`rent` deliberately excluded — `BuyerRequirementPurpose` already supports it for a *requirement*, but nothing in the stage lifecycle below was designed around a lease-signing workflow, so adding it now would be speculative). Rather than two separate stage systems, `OPPORTUNITY_STAGES` (`app/schemas/enums.py`) is one 13-value superset — a BUY and a SELL pipeline are *identical* for most of their length (`offer → negotiation → reservation → contract → closing → won/lost`) and diverge only at the start (`search`/`property_selected` vs. `listing`/`marketing`; both converge into a shared `showing` — a buyer's viewing and a seller's showing are the same event). `OPPORTUNITY_STAGES_BY_TYPE` (data, not a second enum) is what actually keeps a BUY opportunity out of a SELL-only stage and vice versa, enforced in `OpportunityService`, not the database.
+
+This is deliberately **not a workflow/state-transition engine** — any stage valid for the opportunity's type can follow any other, forward or backward, in one `PATCH`; only the *destination* is validated, never the path taken to reach it.
+
+**Relationships** — belongs to `organization` + `contact` (both required); optionally `property_id` and/or `buyer_requirement_id` (foreign keys, never copied/duplicated data). Neither is hard-required at creation ("a BUY opportunity should normally have a buyer_requirement_id" is a *should*, not a constraint — an opportunity can start at pure qualification before either is pinned down), but if `buyer_requirement_id` is given, it must belong to the opportunity's own `contact_id` (property has no owning-contact field anywhere in this schema to cross-check a SELL opportunity's property against, so only org-scoping is checked there).
+
+**Business rules enforced in `OpportunityService`** (not the database, except probability/expected_value's `CHECK` constraints as a second layer):
+- `probability` (0-100) and `expected_value` (≥ 0) are range-validated at both the Pydantic and DB layers.
+- Setting `stage` to `lost` requires `lost_reason` (a **structured soft enum** — `price`/`financing_denied`/`chose_another_property`/`chose_competitor`/`unresponsive`/`changed_mind`/`timeline_changed`/`other` — not free text, so "which deals were lost and why" is answerable by grouping/counting, not by an LLM parsing prose later).
+- Setting `stage` to `won`/`lost` auto-stamps `closed_at`; moving a closed opportunity back to a working stage (**reopening**, supported) clears `closed_at`/`lost_reason` again.
+- `opportunity_type` and `contact_id` are immutable after creation (not in `OpportunityUpdate`) — if the type is wrong, create a new Opportunity; the domain already expects several per contact over time.
+
+**No hard DELETE.** An Opportunity is business history — the same reasoning Activities/Audit Logs already apply. "Removing" one means setting `stage="lost"` with a `lost_reason`, not deleting the row; there's no soft-delete/archived flag either, since a closed stage already serves that purpose.
+
+**Every stage change**: (1) updates the Opportunity, (2) creates a `stage_change` Activity (`"Opportunity stage changed from X to Y."`, linked via the new `opportunity_id` on Activity — see below) so the historical timeline lives in Activities rather than being duplicated inside Opportunity itself, and (3) writes a specifically-named Audit Log action — `OPPORTUNITY_CREATED`/`OPPORTUNITY_UPDATED`/`OPPORTUNITY_STAGE_CHANGED`/`OPPORTUNITY_WON`/`OPPORTUNITY_LOST`/`OPPORTUNITY_REOPENED` — reusing the existing `AuditService`, not a second audit mechanism.
+
+**Activities, Tasks, and Appointments all gained an optional `opportunity_id`** (nullable, `SET NULL` on delete — an Opportunity is business history that's never hard-deleted in normal use, but if it somehow is, the activities/tasks/appointments that happened along the way remain real historical fact). This is what lets the CRM answer "what activities/tasks/appointments belong to this opportunity?" — via `GET /opportunities/{id}/activities` and the `opportunity_id` filter already added to `GET /tasks`/`GET /appointments`'s existing query-filter pattern, rather than a new mechanism.
+
+**Endpoints**: `GET`/`POST /contacts/{id}/opportunities` (list-for-contact / create — same nested pattern as BuyerRequirement/PropertyInterest/Activity, `contact_id` from the URL, never the body), `GET /opportunities` (filterable by `opportunity_type`/`stage`/`owner_user_id`/`contact_id`/`property_id`/`buyer_requirement_id`/`expected_close_from`/`expected_close_to`/`is_closed`), `GET`/`PATCH /opportunities/{id}` (the PATCH is also how stages change — no separate `/close`/`/lost` action routes, matching Task's PATCH-only completion pattern), `GET /opportunities/{id}/activities`. No `DELETE`.
+
+**Authorization**: deliberately **not** role-gated, unlike deleting a Contact/Property/Buyer Requirement/Property Interest. Creating, updating, and changing an opportunity's stage (including closing won/lost) are normal day-to-day agent operations — the same category as Task/Appointment CRUD — not the kind of destructive action `require_role` exists for; see [Authorization Model](#authorization-model).
 
 ## Demo data
 
 `scripts/seed_demo_data.py` populates 20 fictional contacts spanning both ways a person enters the CRM (10 interested in a specific property, 10 with a buyer requirement — including the Property-Interest→not-interested→Buyer-Requirement transition case and a contact whose requirement changed over time), plus ~14 supporting properties and a chronological Activity timeline (2-5 entries) for every contact, under one dedicated **"State AI Demo Organization"**.
+
+**Opportunities (11), on top of the above** — reusing existing contacts/properties/buyer requirements rather than inventing new ones: an active buy search, a negotiation, an offer, a viewing (`stage="showing"`), a property-selected buy, an active sell listing, a won deal, a lost deal, and two contacts each with more than one Opportunity over time — Gabriela (a lost opportunity for the property she rejected, separate from her new active search — the same transition already modeled by her buyer requirement/property interest pair) and Fernando (buying a new home *and* selling his current one, gaining a `seller` contact role alongside his existing `buyer` one — the exact "later sells their own property" scenario from the domain's own framing). A handful of Paola/Carolina/Laura/Natalia's *existing* activities are linked to their new opportunity via `opportunity_id` (not duplicated) for "meaningful activity history." Plus one overdue `Task` (Carlos's stalled follow-up) and one upcoming `Appointment` (Natalia's already-agreed second viewing), both linked to their opportunity the same way.
 
 ```bash
 uv run python scripts/seed_demo_data.py            # create or update — safe to run repeatedly
@@ -224,6 +256,7 @@ All endpoints below live under `/api/v1` and require `Authorization: Bearer <sup
 | POST, DELETE | `/contacts/{id}/roles[/{role_key}]` | Assign / remove a role. |
 | GET, POST | `/contacts/{id}/buyer-requirements` | List / create *for that contact* (Case B). |
 | GET, POST | `/contacts/{id}/property-interests` | List / create *for that contact* (Case A). |
+| GET, POST | `/contacts/{id}/opportunities` | List / create *for that contact* — see [Opportunities / Pipeline](#opportunities--pipeline). |
 | GET, POST | `/contacts/{id}/activities` | Create / the contact's timeline (oldest first) — see [Activities](#activities). |
 | GET, POST | `/properties` | |
 | GET, PATCH | `/properties/{id}` | |
@@ -235,6 +268,9 @@ All endpoints below live under `/api/v1` and require `Authorization: Bearer <sup
 | **DELETE** | **`/buyer-requirements/{id}`** | **owner/admin only.** |
 | POST, DELETE | `/buyer-requirements/{id}/locations[/{location_id}]` | Add / remove a preferred area — never deletes the requirement itself. |
 | POST, DELETE | `/buyer-requirements/{id}/features[/{feature_key}]` | Tag / untag a must-have/preferred/deal-breaker feature — removes the relationship only, never the global feature catalog row. |
+| GET | `/opportunities` | Filterable by `opportunity_type`/`stage`/`owner_user_id`/`contact_id`/`property_id`/`buyer_requirement_id`/`expected_close_from`/`expected_close_to`/`is_closed`. |
+| GET, PATCH | `/opportunities/{id}` | PATCH is also how stages change (including closing won/lost, and reopening) — no separate action routes. No DELETE — see [Opportunities / Pipeline](#opportunities--pipeline). |
+| GET | `/opportunities/{id}/activities` | The deal's own timeline, oldest first — includes every auto-recorded stage-change entry. |
 | **GET** | **`/buyer-requirements/{id}/matches`** | **Use Case 5** — deterministic candidate properties (see below). |
 | GET | `/features` | The global feature catalog (`app/models/feature.py`) — `?active=false` includes inactive features too. Defaults to active-only. |
 | GET, PATCH | `/property-interests/{id}` | |
@@ -537,7 +573,7 @@ Comparing across models/providers today means re-running this after changing `OL
 
 "Who changed what, when" for CRM data — a real production-readiness gap the core CRUD modules shipped without. `audit_logs` (`app/models/audit_log.py`) captures `organization_id`, `actor_user_id` (nullable, `SET NULL` — a deleted user account never erases the historical fact that *someone* acted), `entity_type`/`entity_id`/`action` (freeform strings, not a soft-enum `Literal`, deliberately: every future module adds its own entity/action pair and this table must accept that without a code change here), and `before_data`/`after_data` (JSONB on Postgres, plain JSON on SQLite via `.with_variant()` — the test DB).
 
-**One reusable write path, not duplicated per route**: `app/services/audit_service.py`'s `AuditService.record(...)` is the only place that writes to this table. A Service method (never a route) calls it around its own existing create/update/delete, in the *same* unit of work — `AuditService.record` deliberately doesn't call `db.commit()` itself, so the audit row and the change it describes commit (or roll back) together. Wired in today for `Contact`, `Property`, `BuyerRequirement`, `Activity` (create only — no update/delete route exists for it), `Task`, and `Appointment`; a future module follows the same one-line-per-service-method pattern rather than inventing its own.
+**One reusable write path, not duplicated per route**: `app/services/audit_service.py`'s `AuditService.record(...)` is the only place that writes to this table. A Service method (never a route) calls it around its own existing create/update/delete, in the *same* unit of work — `AuditService.record` deliberately doesn't call `db.commit()` itself, so the audit row and the change it describes commit (or roll back) together. Wired in today for `Contact`, `Property`, `BuyerRequirement`, `Activity` (create only — no update/delete route exists for it), `Task`, `Appointment`, and `Opportunity` (whose stage changes get specifically-named actions — `OPPORTUNITY_WON`/`OPPORTUNITY_LOST`/`OPPORTUNITY_REOPENED`/`OPPORTUNITY_STAGE_CHANGED` — see [Opportunities / Pipeline](#opportunities--pipeline)); a future module follows the same one-line-per-service-method pattern rather than inventing its own.
 
 Snapshots are built from each entity's own `*Read` Pydantic schema (`ContactRead.model_validate(contact).model_dump(mode="json")`), never the raw ORM `__dict__` — so a field already excluded from that entity's API response (there are none sensitive today) is excluded here the same way, not via a second exclusion list. No credential, token, or password ever appears in any snapshot, because none of the audited entities have such a field to begin with.
 
@@ -561,19 +597,19 @@ The Lead Intelligence and Follow-up agents were read-only/advisory from day one 
 
 `tasks` (`app/models/task.py`) — "something that needs to happen": a follow-up call, a document deadline, a notary reminder, an AI recommendation a human turned into concrete work. **Deliberately distinct from `Activity`** ("something that already happened") — completing a Task never auto-creates an Activity; a human decides whether the outcome is worth logging as one.
 
-`task_type` (soft enum: `follow_up`/`call`/`showing`/`document`/`contract`/`notary`/`payment`/`commission`/`other` — several of these exist for modules that don't yet, so a Task can already reference them), `status` (`pending`/`in_progress`/`completed`/`cancelled`), `priority` (`low`/`medium`/`high`/`urgent`), `due_at` (required — every task has a deadline), `completed_at` (nullable, auto-stamped server-side when `status` is set to `completed` without an explicit value). Optionally associated with a `contact_id`/`property_id`/`buyer_requirement_id`/`property_interest_id` — each validated against the caller's own organization before the task is created (never trusted blindly), all `CASCADE` on delete (a task about something that no longer exists stops being actionable, unlike an Activity's historical record). `assigned_to_user_id`/`created_by_user_id` are `SET NULL` — an unassigned task is still a valid backlog item, and deleting a user account shouldn't delete task history.
+`task_type` (soft enum: `follow_up`/`call`/`showing`/`document`/`contract`/`notary`/`payment`/`commission`/`other` — several of these exist for modules that don't yet, so a Task can already reference them), `status` (`pending`/`in_progress`/`completed`/`cancelled`), `priority` (`low`/`medium`/`high`/`urgent`), `due_at` (required — every task has a deadline), `completed_at` (nullable, auto-stamped server-side when `status` is set to `completed` without an explicit value). Optionally associated with a `contact_id`/`property_id`/`buyer_requirement_id`/`property_interest_id` (all `CASCADE` on delete — a task about something that no longer exists stops being actionable, unlike an Activity's historical record) and/or an `opportunity_id` (`SET NULL` instead — see [Opportunities / Pipeline](#opportunities--pipeline)) — every one of these is validated against the caller's own organization before the task is created, never trusted blindly. `assigned_to_user_id`/`created_by_user_id` are `SET NULL` — an unassigned task is still a valid backlog item, and deleting a user account shouldn't delete task history.
 
-`GET/POST /tasks` (filterable by `status`/`priority`/`assigned_to_user_id`/`contact_id`/`property_id`), `GET/PATCH/DELETE /tasks/{id}`.
+`GET/POST /tasks` (filterable by `status`/`priority`/`assigned_to_user_id`/`contact_id`/`property_id`/`opportunity_id`), `GET/PATCH/DELETE /tasks/{id}`.
 
 ## Appointments
 
 `appointments` (`app/models/appointment.py`) — a scheduled/planned event: "this showing is booked for Tuesday at 4pm." **Deliberately distinct from both `Activity`** (what happened) **and `Task`** (an open action item with no fixed time) — an Appointment doesn't become an Activity automatically once it occurs; a human logs the outcome as an Activity separately, matching the intended flow: *agent creates appointment → occurs → Activity records the outcome*.
 
-`appointment_type` (`showing`/`call`/`meeting`/`notary`/`signing`/`other`), `status` (`scheduled`/`confirmed`/`completed`/`cancelled`/`no_show`), `start_at`/`end_at` (both required, `CHECK (start_at <= end_at)` at the DB level *and* re-validated at the service layer against the merged row on a partial update — checking before the repository's flush, not after, so the friendly 422 fires instead of the DB constraint surfacing as a generic 409). `contact_id` is `CASCADE` (mirrors `PropertyInterest`); `property_id` is `SET NULL` (mirrors `Activity.property_id`'s exact reasoning — deleting a property must not erase the historical fact that an appointment happened there).
+`appointment_type` (`showing`/`call`/`meeting`/`notary`/`signing`/`other`), `status` (`scheduled`/`confirmed`/`completed`/`cancelled`/`no_show`), `start_at`/`end_at` (both required, `CHECK (start_at <= end_at)` at the DB level *and* re-validated at the service layer against the merged row on a partial update — checking before the repository's flush, not after, so the friendly 422 fires instead of the DB constraint surfacing as a generic 409). `contact_id` is `CASCADE` (mirrors `PropertyInterest`); `property_id` and `opportunity_id` are both `SET NULL` (mirrors `Activity.property_id`'s exact reasoning — deleting a property, or an opportunity, must not erase the historical fact that an appointment happened there).
 
 `external_calendar_event_id`/`external_calendar_provider` exist so a future real calendar sync has somewhere to record "this is already mirrored externally as event X" — both `NULL` today; nothing populates them yet (see [Calendar Integration Architecture](#calendar-integration-architecture)). This PropPilot row is always the source of truth, never the external calendar.
 
-`GET/POST /appointments` (filterable by `status`/`contact_id`/`property_id`/`assigned_to_user_id`/`start_from`/`start_to`), `GET/PATCH/DELETE /appointments/{id}`.
+`GET/POST /appointments` (filterable by `status`/`contact_id`/`property_id`/`opportunity_id`/`assigned_to_user_id`/`start_from`/`start_to`), `GET/PATCH/DELETE /appointments/{id}`.
 
 ## Notifications Architecture
 
@@ -637,9 +673,9 @@ Never leaked to a client, under any of these paths: a stack trace, raw SQL, a fi
 
 ## What's next
 
-- Sales Copilot, built the same way Lead Intelligence and Follow-up were: on top of the existing `get_lead_context` tool and the `LLMProvider` abstraction, not a new pattern. Once it or any agent needs to *write* CRM data (not just recommend), that's a deliberate, separate decision — not something this hardening pass enables by itself.
+- A Pipeline-aware AI agent (Sales Copilot or an extension of Lead Intelligence), built the same way Lead Intelligence and Follow-up were: on top of the existing `get_lead_context` tool and the `LLMProvider` abstraction, not a new pattern — deliberately not built in this task. `LeadContext` doesn't include Opportunities yet; extending it (or adding an equivalent `get_pipeline_context`) is the natural next step before any agent can answer "which opportunities are at risk," "which deals are close to closing," etc. — the structured fields (`stage`, `probability`, `expected_value`, `expected_close_date`, `lost_reason`) this task added exist specifically so that agent doesn't have to parse free text. Once it or any agent needs to *write* CRM data (not just recommend), that's a further, separate decision — not something this task enables by itself.
 - Actually sending the Follow-up Agent's `suggested_message` (WhatsApp/email integration) — deliberately out of scope; today's agent only recommends, a human sends it.
-- Wiring the frontend to the Lead Intelligence, Follow-up, Tasks, Appointments, and Notifications endpoints (deliberately not done yet — backend-only so far).
+- Wiring the frontend to the Lead Intelligence, Follow-up, Tasks, Appointments, Notifications, and Opportunities endpoints (deliberately not done yet — backend-only so far).
 - A real production rollout decision for `LLM_PROVIDER` (Ollama is a local-dev choice, not a production one) — plus a third `LLMProvider` implementation (OpenAI/HuggingFace) if there's ever a real reason to compare providers beyond the two that already exist.
 - A provider registry, if a third or fourth provider ever makes the current `if`/`elif` in `factory.py` awkward — not needed at two providers.
 - Wire the frontend's `lib/api/*` to this backend instead of mock data.
@@ -651,6 +687,8 @@ Never leaked to a client, under any of these paths: a stack trace, raw SQL, a fi
 - Broader role authorization once Transactions/Commissions/Organization-settings/User-management routes actually exist — `require_role` is ready, nothing to build there, just apply it.
 - Row Level Security, once/if the connection strategy supports it (see [Security considerations](#security-considerations) — isolation is enforced at the application layer today).
 - Async SQLAlchemy, if/when request volume justifies the added complexity — sync was the deliberate Phase 1 choice for simplicity.
+- Transactions/Commissions, once built, should reference `Opportunity` the same way Activities/Tasks/Appointments now can (a nullable `opportunity_id`) — an Opportunity reaching `won` is the natural trigger point for a future Transaction to exist.
+- A pre-existing, unrelated data-corruption issue was noticed (not introduced or fixed in this task): a handful of Spanish accented characters (e.g. "í", "ú", em dashes) in already-seeded demo data round-trip incorrectly through this specific Windows development machine's connection to the real Supabase Postgres database (confirmed present in older seed rows from before this task, and reproducible with brand-new writes too) — most accented characters (e.g. "á") are unaffected. Worth a dedicated investigation (likely a client/connection encoding setting) before this environment is used for anything demo-facing; out of scope here since it's environmental, not application logic, and pre-dates this task.
 
 ## Known environment note
 
