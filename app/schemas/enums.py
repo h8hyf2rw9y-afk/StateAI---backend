@@ -142,3 +142,23 @@ RECOMMENDED_NEXT_ACTIONS: tuple[str, ...] = (
 RecommendedNextAction = Literal[
     "call", "whatsapp", "email", "schedule_viewing", "send_properties", "follow_up", "meeting", "re_engage", "no_action_needed"
 ]
+
+# app/schemas/follow_up.py — the Follow-up Agent's own structured output.
+# `priority` there reuses LeadPriority directly (same three values, no
+# separate tuple needed) since a follow-up's urgency and a lead's overall
+# priority share the same high/medium/low scale.
+FOLLOW_UP_CHANNELS: tuple[str, ...] = ("whatsapp", "email", "call", "none")
+FollowUpChannel = Literal["whatsapp", "email", "call", "none"]
+
+FOLLOW_UP_ACTIONS: tuple[str, ...] = (
+    "follow_up",
+    "send_properties",
+    "confirm_viewing",
+    "check_in",
+    "call_client",
+    "prepare_for_appointment",
+    "no_action",
+)
+FollowUpAction = Literal[
+    "follow_up", "send_properties", "confirm_viewing", "check_in", "call_client", "prepare_for_appointment", "no_action"
+]

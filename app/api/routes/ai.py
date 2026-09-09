@@ -3,6 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from app.ai.follow_up_agent import FollowUpAgent
 from app.ai.lead_context_tool import get_lead_context
 from app.ai.lead_intelligence_agent import LeadIntelligenceAgent
 from app.ai.llm.base import LLMProvider
@@ -10,6 +11,7 @@ from app.ai.llm.errors import LLMConfigError, LLMInvalidOutputError, LLMProvider
 from app.ai.llm.factory import build_default_provider
 from app.core.database import get_db
 from app.core.security import get_current_org_user
+from app.schemas.follow_up import FollowUpResult
 from app.schemas.lead_context import LeadContext
 from app.schemas.lead_intelligence import LeadIntelligenceResult
 from app.schemas.user import CurrentUser
@@ -64,6 +66,32 @@ def analyze_lead(
     agent = LeadIntelligenceAgent(db, llm)
     try:
         return agent.analyze(current_user, contact_id)
+    except LLMTimeoutError as exc:
+        raise HTTPException(status.HTTP_504_GATEWAY_TIMEOUT, "The AI analysis service timed out.") from exc
+    except LLMInvalidOutputError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "The AI analysis service returned an unexpected response.") from exc
+    except LLMProviderError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "The AI analysis service is currently unavailable.") from exc
+
+
+@router.post("/follow-up/{contact_id}", response_model=FollowUpResult)
+def recommend_follow_up(
+    contact_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_org_user),
+    db: Session = Depends(get_db),
+    llm: LLMProvider = Depends(_get_llm_provider),
+) -> FollowUpResult:
+    """
+    Runs the Follow-up Agent (app/ai/follow_up_agent.py) for one contact:
+    builds its LeadContext, asks the configured LLM whether this lead needs
+    follow-up right now and through which channel, and returns the
+    validated structured recommendation. Read-only and advisory only — this
+    never modifies any CRM data, sends any message, or creates any
+    appointment; a human advisor decides whether to act on it.
+    """
+    agent = FollowUpAgent(db, llm)
+    try:
+        return agent.recommend(current_user, contact_id)
     except LLMTimeoutError as exc:
         raise HTTPException(status.HTTP_504_GATEWAY_TIMEOUT, "The AI analysis service timed out.") from exc
     except LLMInvalidOutputError as exc:

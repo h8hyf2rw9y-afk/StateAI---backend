@@ -210,6 +210,7 @@ All endpoints below live under `/api/v1` and require `Authorization: Bearer <sup
 | GET | `/activities/{id}` | |
 | GET | `/ai/lead-context/{contact_id}` | Internal/debug surface for the AI Context Layer — see [AI Context Layer](#ai-context-layer). |
 | POST | `/ai/lead-intelligence/{contact_id}` | Runs the Lead Intelligence Agent — see [Lead Intelligence Agent](#lead-intelligence-agent). |
+| POST | `/ai/follow-up/{contact_id}` | Runs the Follow-up Agent — see [Follow-up Agent](#follow-up-agent). |
 
 ### Example: Use Cases 1–5 via curl
 
@@ -400,6 +401,43 @@ ANTHROPIC_API_KEY=sk-ant-... uv run pytest tests/test_lead_intelligence_integrat
 
 The Ollama test needs an explicit env var, not just Ollama being reachable, on purpose: on a dev machine where Ollama happens to already be running for something unrelated, a plain `uv run pytest` must stay fast (a few seconds) rather than silently turning into several minutes of real LLM calls just because Ollama was up in the background.
 
+## Follow-up Agent
+
+The second real AI agent, built on exactly the same architecture as [Lead Intelligence Agent](#lead-intelligence-agent) — same `LeadContext`, same `LLMProvider` abstraction, same providers, same route/error-handling shape. It answers a different question, though:
+
+| | Lead Intelligence | Follow-up |
+|---|---|---|
+| Question | "How important is this lead, what should the advisor prioritize?" | "Does this lead need follow-up **right now**, through which channel, and what should the advisor say?" |
+| Schema | `LeadIntelligenceAnalysis` | `FollowUpRecommendation` |
+| Prompt | `app/ai/prompts/lead_intelligence.py` | `app/ai/prompts/follow_up.py` (written from scratch, not derived from the other) |
+| Route | `POST /ai/lead-intelligence/{contact_id}` | `POST /ai/follow-up/{contact_id}` |
+
+**Flow**: `CurrentUser → get_lead_context → LeadContext → LLMProvider → FollowUpRecommendation → FollowUpResult` — identical shape to Lead Intelligence's, reusing the same AI Tool. `FollowUpAgent` (`app/ai/follow_up_agent.py`) never touches a repository or Supabase directly; `ActivityRepository`/`BuyerRequirementRepository`/`PropertyInterestRepository`/`PropertyRepository` are all reused exactly as `LeadContextService` already composes them — no new repository or database-access code was needed for this agent.
+
+### Response schema (`app/schemas/follow_up.py`)
+
+`FollowUpRecommendation` — what the LLM produces: `should_follow_up` (bool), `priority` (reuses the `LeadPriority` soft enum — same three values, no reason for a second tuple), `recommended_channel` (`whatsapp`/`email`/`call`/`none`), `recommended_action` (`follow_up`/`send_properties`/`confirm_viewing`/`check_in`/`call_client`/`prepare_for_appointment`/`no_action`), `reason`, `suggested_message` (nullable), `confidence` (`0.0`-`1.0`, with the same explicit "a decimal, never a percentage" description Lead Intelligence's `confidence` field needed after real testing — see below). `FollowUpResult` wraps it with the same provenance fields (`contact_id`, `model`, `prompt_version`, `generated_at`).
+
+**`suggested_message` is a prompt-level rule, not a hard schema validator**: the brief asks that it be null/empty when `should_follow_up` is false, but this is enforced only by instructing the model, not by a Pydantic cross-field check that would reject the response outright. Given what real local-model testing already showed with Lead Intelligence's `confidence` field (small models don't always follow instructions embedded only in a schema description), adding a strict validator here risked the same class of spurious `LLMInvalidOutputError` for a cosmetic inconsistency (a stray non-null message) rather than a real correctness problem (a wrong probability). `confidence`'s numeric range stays hard-enforced because an out-of-range confidence is actually meaningless; a redundant message alongside `should_follow_up=false` is just noise the advisor would immediately recognize as irrelevant.
+
+### System prompt (`app/ai/prompts/follow_up.py`)
+
+Deliberately not copied from Lead Intelligence's — written to this agent's actual job. Versioned via `FOLLOW_UP_PROMPT_VERSION` (`v1`). Instructs the model to: reason over the whole CRM context rather than a fixed "N days" rule (the same lead's silence can be normal or urgent depending on what else is happening); read `direction` (`inbound` vs `outbound`) on the last activity, since an unanswered outbound message means something different from an unanswered inbound one; tell a buyer (searching, or interested in one listing) from a seller (has a listing) and recommend accordingly (matching properties/viewing follow-up/negotiation prep for buyers; availability/documentation/interested-buyer updates for sellers); treat a `not_interested` property interest followed by a new `buyer_requirement` as one continuing lead, not a dead one; keep fact, inference, and recommendation distinct; write a short, grounded `suggested_message` only when `should_follow_up` is true; and never claim to contact anyone or take any action itself.
+
+### API
+
+`POST /ai/follow-up/{contact_id}` — identical auth, org-scoping, and error-handling shape as `/ai/lead-intelligence/{contact_id}` (`404` unauthorized/missing contact, `503` misconfigured provider, `504` timeout, `502` provider/invalid-output error — see [Lead Intelligence Agent](#lead-intelligence-agent)'s error table, unchanged here).
+
+### Safety: recommendation-only
+
+Same guarantee as Lead Intelligence, worth restating because this agent's whole subject is "what to say to the client": it can analyze and recommend a channel/action/message, but it cannot send anything, modify any contact/activity/property, change any status, or create any appointment. It has no tool besides the same read-only `get_lead_context`. Sending the suggested message (WhatsApp/email integration) is explicitly a future capability, not implemented here.
+
+### Testing
+
+`tests/test_follow_up_agent.py` (26 tests) — same fully-offline `FakeLLMProvider` pattern as Lead Intelligence's test file. Covers the schema (valid payload, null message on no-follow-up, confidence boundaries and out-of-range/percentage rejection, unknown channel/action/priority rejection), the agent (an active buyer with a stale contact; a recently-contacted lead needing no follow-up; the prompt carrying `direction` and `days_since_last_activity` rather than a precomputed verdict; Gabriela's rejected-interest-plus-new-requirement pattern reaching the prompt together; recent multi-activity engagement reflected in `activity_count`; a brand-new contact with no history still producing a valid context; 404 for a missing or cross-org contact with the LLM never called; every `LLMError` subtype propagating; and that no `Contact`/`Activity`/`BuyerRequirement` row is created, changed, or removed by running the agent), and the route (success, `503`/`504`/`502` for each failure mode, `404` cross-org).
+
+`tests/test_follow_up_agent_ollama_integration.py` — the real-Ollama smoke test, gated the same way as Lead Intelligence's (`RUN_OLLAMA_INTEGRATION_TESTS=1` plus a live server; see that section above for why reachability alone isn't enough). Runs Carlos/Gabriela/Carolina/Sergio and checks only the structural contract (valid enum values, `confidence` in range, `recommended_channel="none"` whenever `should_follow_up` is false) — never a hardcoded expected conclusion.
+
 ## Security considerations
 
 - **JWT verification is the real security boundary here** — not the frontend's `proxy.ts` (documented there as optimistic-only). Every protected route depends on `get_current_org_user`, which cryptographically verifies the token against Supabase's own public keys.
@@ -413,8 +451,9 @@ The Ollama test needs an explicit env var, not just Ollama being reachable, on p
 
 ## What's next
 
-- Follow-up Agent and Sales Copilot, built the same way the Lead Intelligence Agent was: on top of the existing `get_lead_context` tool and the `LLMProvider` abstraction, not a new pattern.
-- Wiring the frontend to the Lead Intelligence Agent's endpoint (deliberately not done yet — backend-only so far, see [Lead Intelligence Agent](#lead-intelligence-agent)).
+- Sales Copilot, built the same way Lead Intelligence and Follow-up were: on top of the existing `get_lead_context` tool and the `LLMProvider` abstraction, not a new pattern.
+- Actually sending the Follow-up Agent's `suggested_message` (WhatsApp/email integration) — deliberately out of scope; today's agent only recommends, a human sends it.
+- Wiring the frontend to the Lead Intelligence and Follow-up agents' endpoints (deliberately not done yet — backend-only so far).
 - A real production rollout decision for `LLM_PROVIDER` (Ollama is a local-dev choice, not a production one) — plus a third `LLMProvider` implementation (OpenAI/HuggingFace) if there's ever a real reason to compare providers beyond the two that already exist.
 - A provider registry, if a third or fourth provider ever makes the current `if`/`elif` in `factory.py` awkward — not needed at two providers.
 - Wire the frontend's `lib/api/*` to this backend instead of mock data.
