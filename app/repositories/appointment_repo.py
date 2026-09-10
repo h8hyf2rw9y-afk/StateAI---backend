@@ -64,6 +64,29 @@ class AppointmentRepository(OrgScopedRepository[Appointment]):
         )
         return list(self.db.execute(stmt).scalars().all())
 
+    def list_completed(self, organization_id: uuid.UUID) -> list[Appointment]:
+        """
+        Used by app/automation/detectors.py's
+        detect_completed_appointments_needing_followup. Unlike
+        list_overdue/list_upcoming, "completed" is not a set an appointment
+        ever leaves once it enters it — every currently-completed
+        appointment in the organization is re-evaluated on every detector
+        run, exactly like list_overdue/list_upcoming already do, relying on
+        AuditLogRepository.exists_for_entity (see actions.py) to make every
+        repeat run a no-op. This is a real, accepted scaling tradeoff (this
+        query grows with the organization's total completed-appointment
+        history, not just its currently-open backlog) rather than a bug —
+        acceptable at this project's current scale, and no different in
+        kind from any other unbounded `list()` already in this codebase;
+        worth revisiting with a time bound only if a real organization's
+        history makes it slow, not before.
+        """
+        stmt = select(Appointment).where(
+            Appointment.organization_id == organization_id,
+            Appointment.status == "completed",
+        )
+        return list(self.db.execute(stmt).scalars().all())
+
     def list_upcoming(self, organization_id: uuid.UUID, *, now: datetime, within: timedelta) -> list[Appointment]:
         """
         Used by app/automation/detectors.py's detect_upcoming_appointments.

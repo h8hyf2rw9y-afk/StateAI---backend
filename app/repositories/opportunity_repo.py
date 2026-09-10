@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 
@@ -51,6 +51,26 @@ class OpportunityRepository(OrgScopedRepository[Opportunity]):
         elif is_closed is False:
             stmt = stmt.where(Opportunity.stage.not_in(OPPORTUNITY_CLOSED_STAGES))
         stmt = stmt.order_by(Opportunity.created_at.desc()).limit(limit).offset(offset)
+        return list(self.db.execute(stmt).scalars().all())
+
+    def list_inactive(self, organization_id: uuid.UUID, *, now: datetime, since: timedelta) -> list[Opportunity]:
+        """
+        Used by app/automation/detectors.py's detect_inactive_opportunities —
+        same explicit-`now`-parameter convention as TaskRepository.list_overdue
+        so the boundary is testable with a controlled clock. `updated_at`
+        (TimestampMixin, auto-stamped on every write) is the one existing
+        signal of "when did anything last happen to this deal" — the same
+        column OpportunityService.update already bumps on every stage
+        change, note, or field edit, so no new activity-tracking column is
+        needed. A closed (won/lost) opportunity is excluded: it isn't
+        "going stale," it's finished.
+        """
+        threshold = now - since
+        stmt = select(Opportunity).where(
+            Opportunity.organization_id == organization_id,
+            Opportunity.updated_at < threshold,
+            Opportunity.stage.not_in(OPPORTUNITY_CLOSED_STAGES),
+        )
         return list(self.db.execute(stmt).scalars().all())
 
     def list_for_contact(self, organization_id: uuid.UUID, contact_id: uuid.UUID) -> list[Opportunity]:

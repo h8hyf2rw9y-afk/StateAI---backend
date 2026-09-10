@@ -64,10 +64,18 @@ def run_all_organizations_once() -> None:
         org_db = SessionLocal()
         try:
             counts = run_detectors_for_organization(org_db, organization.id)
-            if counts["task_due"] or counts["appointment_upcoming"]:
+            if any(counts.values()):
                 logger.info(
-                    "automation.detectors_ran organization_id=%s task_due=%d appointment_upcoming=%d",
-                    organization.id, counts["task_due"], counts["appointment_upcoming"],
+                    "automation.detectors_ran organization_id=%s task_due=%d appointment_upcoming=%d "
+                    "contact_missing_requirements=%d buyer_requirement_completeness=%d opportunity_inactive=%d "
+                    "completed_appointment_followup=%d",
+                    organization.id,
+                    counts["task_due"],
+                    counts["appointment_upcoming"],
+                    counts["contact_missing_requirements"],
+                    counts["buyer_requirement_completeness"],
+                    counts["opportunity_inactive"],
+                    counts["completed_appointment_followup"],
                 )
         except Exception:
             logger.exception("automation.detectors_failed organization_id=%s", organization.id)

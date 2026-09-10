@@ -56,6 +56,22 @@ class UserRepository:
     def get(self, user_id: uuid.UUID) -> User | None:
         return self.db.get(User, user_id)
 
+    def list_for_organization(self, organization_id: uuid.UUID) -> list[User]:
+        """
+        Added for app/automation/detectors.py — same "one-line addition
+        for the scheduler, not new infrastructure" reasoning as
+        OrganizationRepository.list_all above. Needed because Contact and
+        BuyerRequirement (unlike Task/Appointment/Opportunity) have no
+        owner/assignee column of their own: there is no single "right"
+        recipient to read off the entity itself, so a contact- or
+        requirement-level recommendation notifies every user who actually
+        has access to this organization — correct for this CRM's current
+        small-team-per-organization shape, and each notification is still
+        independently deduplicated per (user, type, related_entity).
+        """
+        stmt = select(User).where(User.organization_id == organization_id)
+        return list(self.db.execute(stmt).scalars().all())
+
     def create(self, user_id: uuid.UUID, organization_id: uuid.UUID, role: str) -> User:
         user = User(id=user_id, organization_id=organization_id, role=role)
         self.db.add(user)

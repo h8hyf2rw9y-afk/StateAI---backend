@@ -13,11 +13,13 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.automation import actions
+from app.models.appointment import Appointment
 from app.models.audit_log import AuditLog
 from app.models.contact import Contact
 from app.models.notification import Notification
 from app.models.opportunity import Opportunity
 from app.models.organization import Organization, User
+from app.models.task import Task
 
 
 def _make_contact(db: Session, organization_id: uuid.UUID, **overrides) -> Contact:
@@ -119,6 +121,107 @@ class TestUpdateOpportunityStage:
         assert updated.stage == "search"
         entries = db_session.query(AuditLog).filter(AuditLog.entity_id == opportunity.id).all()
         assert any(e.action == "OPPORTUNITY_STAGE_CHANGED" for e in entries)
+
+
+def _make_appointment(db: Session, organization_id: uuid.UUID, **overrides) -> Appointment:
+    start_at = overrides.pop("start_at", datetime.now(timezone.utc) - timedelta(days=1))
+    appointment = Appointment(
+        organization_id=organization_id,
+        title=overrides.pop("title", "Showing"),
+        appointment_type=overrides.pop("appointment_type", "showing"),
+        status=overrides.pop("status", "completed"),
+        start_at=start_at,
+        end_at=overrides.pop("end_at", start_at + timedelta(hours=1)),
+        **overrides,
+    )
+    db.add(appointment)
+    db.commit()
+    db.refresh(appointment)
+    return appointment
+
+
+class TestCreateCompletedAppointmentFollowupTask:
+    """Phase 7 — the project's first Level-2 (controlled automation) CRM write."""
+
+    def test_creates_a_real_task_with_deterministic_content_and_an_audit_entry(self, db_session, organization_id, current_user):
+        contact = _make_contact(db_session, organization_id)
+        appointment = _make_appointment(db_session, organization_id, contact_id=contact.id, assigned_to_user_id=current_user.id)
+
+        task = actions.create_completed_appointment_followup_task(db_session, organization_id, appointment=appointment)
+
+        assert task is not None
+        assert task.title == "Review completed showing outcome and follow up with client"
+        assert task.task_type == "follow_up"
+        assert task.contact_id == contact.id
+        assert task.assigned_to_user_id == current_user.id
+
+        task_audit = db_session.query(AuditLog).filter(AuditLog.entity_id == task.id, AuditLog.action == "TASK_CREATED").one_or_none()
+        assert task_audit is not None
+
+        marker_audit = (
+            db_session.query(AuditLog)
+            .filter(AuditLog.entity_id == appointment.id, AuditLog.action == "APPOINTMENT_FOLLOWUP_TASK_CREATED")
+            .one_or_none()
+        )
+        assert marker_audit is not None
+
+    def test_also_creates_a_companion_notification_linking_to_the_task(self, db_session, organization_id, current_user):
+        contact = _make_contact(db_session, organization_id, first_name="Ana", last_name="QA")
+        appointment = _make_appointment(db_session, organization_id, contact_id=contact.id, assigned_to_user_id=current_user.id)
+
+        task = actions.create_completed_appointment_followup_task(db_session, organization_id, appointment=appointment)
+
+        notification = db_session.query(Notification).filter(Notification.related_entity_id == task.id).one_or_none()
+        assert notification is not None
+        assert notification.type == "followup_task_created"
+        assert notification.related_entity_type == "task"
+        assert notification.user_id == current_user.id
+        assert "Ana QA" in notification.body
+        assert str(appointment.id) not in notification.body  # no raw UUID exposure
+
+    def test_returns_none_and_creates_nothing_when_already_processed(self, db_session, organization_id, current_user):
+        contact = _make_contact(db_session, organization_id)
+        appointment = _make_appointment(db_session, organization_id, contact_id=contact.id, assigned_to_user_id=current_user.id)
+
+        first = actions.create_completed_appointment_followup_task(db_session, organization_id, appointment=appointment)
+        second = actions.create_completed_appointment_followup_task(db_session, organization_id, appointment=appointment)
+
+        assert first is not None
+        assert second is None
+        assert db_session.query(Task).filter(Task.contact_id == contact.id).count() == 1
+
+    def test_returns_none_when_the_appointment_has_no_contact(self, db_session, organization_id, current_user):
+        appointment = _make_appointment(db_session, organization_id, contact_id=None, assigned_to_user_id=current_user.id)
+        assert actions.create_completed_appointment_followup_task(db_session, organization_id, appointment=appointment) is None
+
+    def test_falls_back_to_the_linked_opportunitys_owner_when_unassigned(self, db_session, organization_id, current_user):
+        contact = _make_contact(db_session, organization_id)
+        opportunity = Opportunity(
+            organization_id=organization_id, contact_id=contact.id, opportunity_type="buy",
+            stage="showing", title="Test opportunity", owner_user_id=current_user.id,
+        )
+        db_session.add(opportunity)
+        db_session.commit()
+        appointment = _make_appointment(db_session, organization_id, contact_id=contact.id, assigned_to_user_id=None, opportunity_id=opportunity.id)
+
+        task = actions.create_completed_appointment_followup_task(db_session, organization_id, appointment=appointment)
+
+        assert task is not None
+        assert task.assigned_to_user_id == current_user.id
+        assert task.opportunity_id == opportunity.id
+
+    def test_returns_none_when_no_assignee_can_be_found(self, db_session, organization_id):
+        contact = _make_contact(db_session, organization_id)
+        appointment = _make_appointment(db_session, organization_id, contact_id=contact.id, assigned_to_user_id=None)
+        assert actions.create_completed_appointment_followup_task(db_session, organization_id, appointment=appointment) is None
+
+    def test_never_calls_an_llm_or_aigateway(self, db_session, organization_id, current_user):
+        """Structural safety check — this whole module must remain import-free of any AI/LLM dependency."""
+        import app.automation.actions as actions_module
+
+        source_names = dir(actions_module)
+        assert "AIGateway" not in source_names
+        assert "LLMProvider" not in source_names
 
 
 class TestCreateNotification:

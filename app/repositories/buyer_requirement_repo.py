@@ -37,6 +37,26 @@ class BuyerRequirementRepository(OrgScopedRepository[BuyerRequirement]):
         )
         return list(self.db.execute(stmt).scalars().all())
 
+    def list_active(self, organization_id: uuid.UUID) -> list[BuyerRequirement]:
+        """
+        Used by app/automation/detectors.py's detect_incomplete_buyer_requirements.
+        Only "active" requirements are evaluated for completeness — a
+        paused, fulfilled, or cancelled one is no longer something the
+        advisor is actively trying to move toward matching (same
+        reasoning MatchingService already applies implicitly by only
+        ever being called against one specific requirement the advisor
+        chose, never "the newest one regardless of status").
+        """
+        stmt = (
+            select(BuyerRequirement)
+            .options(*_EAGER)
+            .where(
+                BuyerRequirement.organization_id == organization_id,
+                BuyerRequirement.status == "active",
+            )
+        )
+        return list(self.db.execute(stmt).scalars().all())
+
     def list_for_contact(self, organization_id: uuid.UUID, contact_id: uuid.UUID) -> list[BuyerRequirement]:
         stmt = (
             select(BuyerRequirement)

@@ -238,6 +238,15 @@ NOTIFICATION_TYPES: tuple[str, ...] = (
 )
 NotificationType = Literal[
     "task_due", "appointment_upcoming", "follow_up_reminder", "document_deadline", "contract_deadline", "system",
+    # Phase 6 — event-driven recommendations (app/automation/detectors.py).
+    # Plain new string values on an already-soft-enum column: no migration,
+    # same as every value above (NotificationRead.type stays plain `str`,
+    # so an older/newer app version can never crash on an unmapped value).
+    "contact_missing_requirements", "buyer_requirement_incomplete", "buyer_requirement_ready", "opportunity_inactive",
+    # Phase 7 — the completed-appointment follow-up Task's companion
+    # notification (app/automation/actions.py's
+    # create_completed_appointment_followup_task).
+    "followup_task_created",
 ]
 
 # app/models/opportunity.py — the two sales processes this CRM actively
