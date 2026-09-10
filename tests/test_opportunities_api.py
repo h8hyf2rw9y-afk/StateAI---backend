@@ -549,3 +549,75 @@ def test_cross_organization_opportunity_id_is_rejected_on_task(db_session: Sessi
         assert response.status_code == 404
     finally:
         app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# Phase 5, Part 9 — post-sale follow-up: closing an opportunity Won creates
+# a real future Task, without a new "post_sale" pipeline stage. See
+# OpportunityService._maybe_create_post_sale_task and
+# POST_SALE_FOLLOW_UP_DAYS.
+# ---------------------------------------------------------------------------
+
+
+def test_closing_won_creates_a_post_sale_follow_up_task(client: TestClient, current_user: CurrentUser):
+    contact = _create_contact(client, first_name="Beatriz", last_name="Reyes")
+    prop = _create_property(client)
+    created = client.post(
+        f"/api/v1/contacts/{contact['id']}/opportunities", json=_buy_payload(property_id=prop["id"])
+    ).json()
+
+    won = client.patch(f"/api/v1/opportunities/{created['id']}", json={"stage": "won"})
+    assert won.status_code == 200
+
+    tasks = client.get("/api/v1/tasks", params={"opportunity_id": created["id"]}).json()
+    assert len(tasks) == 1
+    task = tasks[0]
+    assert "Beatriz Reyes" in task["title"]
+    assert task["contact_id"] == contact["id"]
+    assert task["property_id"] == prop["id"]
+    assert task["task_type"] == "follow_up"
+    assert task["status"] == "pending"
+    assert task["assigned_to_user_id"] == str(current_user.id)
+
+    won_at = won.json()["closed_at"]
+    from datetime import datetime, timedelta
+
+    expected_due = datetime.fromisoformat(won_at.replace("Z", "+00:00")) + timedelta(days=30)
+    actual_due = datetime.fromisoformat(task["due_at"].replace("Z", "+00:00"))
+    assert abs((actual_due - expected_due).total_seconds()) < 5
+
+    audit = client.get("/api/v1/audit-logs", params={"entity_type": "task", "entity_id": task["id"]}).json()
+    assert "TASK_CREATED" in [entry["action"] for entry in audit]
+
+
+def test_marking_lost_does_not_create_a_post_sale_task(client: TestClient):
+    contact = _create_contact(client)
+    created = client.post(f"/api/v1/contacts/{contact['id']}/opportunities", json=_buy_payload()).json()
+
+    client.patch(f"/api/v1/opportunities/{created['id']}", json={"stage": "lost", "lost_reason": "price"})
+
+    assert client.get("/api/v1/tasks", params={"opportunity_id": created["id"]}).json() == []
+
+
+def test_reopening_and_rewinning_does_not_duplicate_the_post_sale_task(client: TestClient):
+    """Won -> reopened -> Won again: this is a real, deterministic rule (not deduplicated like automated notifications), so a second genuine Won transition creating a second real task is correct, not a bug — this test documents that explicitly rather than assuming it away."""
+    contact = _create_contact(client)
+    created = client.post(f"/api/v1/contacts/{contact['id']}/opportunities", json=_buy_payload()).json()
+
+    client.patch(f"/api/v1/opportunities/{created['id']}", json={"stage": "won"})
+    client.patch(f"/api/v1/opportunities/{created['id']}", json={"stage": "negotiation"})  # reopen
+    client.patch(f"/api/v1/opportunities/{created['id']}", json={"stage": "won"})
+
+    tasks = client.get("/api/v1/tasks", params={"opportunity_id": created["id"]}).json()
+    assert len(tasks) == 2
+
+
+def test_a_non_stage_update_does_not_create_a_post_sale_task(client: TestClient):
+    contact = _create_contact(client)
+    created = client.post(f"/api/v1/contacts/{contact['id']}/opportunities", json=_buy_payload()).json()
+    client.patch(f"/api/v1/opportunities/{created['id']}", json={"stage": "won"})
+
+    client.patch(f"/api/v1/opportunities/{created['id']}", json={"description": "Updated description"})
+
+    tasks = client.get("/api/v1/tasks", params={"opportunity_id": created["id"]}).json()
+    assert len(tasks) == 1  # only the one from the original Won transition

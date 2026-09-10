@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
@@ -16,12 +17,25 @@ from app.schemas.enums import OPPORTUNITY_CLOSED_STAGES, OPPORTUNITY_STAGES_BY_T
 from app.schemas.opportunity import OpportunityCreate, OpportunityRead, OpportunityUpdate
 from app.services.audit_service import AuditService
 
+logger = logging.getLogger("app.services.opportunity_service")
+
 _STAGE_LABELS = {
     "qualification": "Qualification", "search": "Search", "listing": "Listing", "marketing": "Marketing",
     "property_selected": "Property selected", "showing": "Showing", "offer": "Offer",
     "negotiation": "Negotiation", "reservation": "Reservation", "contract": "Contract",
     "closing": "Closing", "won": "Won", "lost": "Lost",
 }
+
+# Phase 5, Part 9 — post-sale follow-up, without a new "post_sale" pipeline
+# stage: a Task due this many days after closing is the smallest existing
+# mechanism that represents "check in with a client after the deal is
+# done" — Task already models exactly this ("something that needs to
+# happen," app/models/task.py), and it's already visible on the real Tasks
+# list/Dashboard/notification path with no new UI. A plain, documented
+# constant rather than a new setting — see app/automation/detectors.py's
+# UPCOMING_APPOINTMENT_WINDOW for the same reasoning; there's no present
+# need to vary this per deployment.
+POST_SALE_FOLLOW_UP_DAYS = 30
 
 
 class OpportunityService:
@@ -183,6 +197,7 @@ class OpportunityService:
         if stage_changed:
             self._record_stage_change_activity(organization_id, updated, before_stage, new_stage, actor_user_id)
             if new_stage == "won":
+                self._maybe_create_post_sale_task(organization_id, updated, actor_user_id)
                 action = "OPPORTUNITY_WON"
             elif new_stage == "lost":
                 action = "OPPORTUNITY_LOST"
@@ -205,6 +220,61 @@ class OpportunityService:
         self.db.commit()
         self.db.refresh(updated)
         return updated
+
+    def _maybe_create_post_sale_task(
+        self, organization_id: uuid.UUID, opportunity: Opportunity, actor_user_id: uuid.UUID | None
+    ) -> None:
+        """
+        Level 2 controlled automation (Phase 5, Part 9): the one action
+        this service takes on its own, deliberately narrow — creating an
+        additive, reversible, fully-auditable Task, never touching the
+        Opportunity/Contact/Property themselves any further. Reuses the
+        existing stage-change hook (right where the stage-change Activity
+        above is already recorded) as its trigger point, per the phase
+        brief's own instruction to build on that precedent rather than a
+        new one. Goes through app/automation/actions.create_task — the one
+        approved action layer, not a direct TaskRepository call — so this
+        gets the exact same validation/audit trail (TASK_CREATED) any other
+        caller of that function gets, no special case for "the system did
+        it."
+
+        Local import: see actions.update_opportunity_stage's own docstring
+        for why app/automation/actions.py can't import OpportunityService
+        at module level, which is the other half of the same cycle this
+        avoids.
+
+        assigned_to_user_id is required (TaskBase, app/schemas/task.py) —
+        if neither the opportunity's own owner nor whoever closed it is
+        known, there is no one to fabricate an assignee from, so this is
+        skipped (logged, not raised — a missing post-sale task must never
+        block the Won transition itself from succeeding).
+        """
+        assignee = opportunity.owner_user_id or actor_user_id
+        if assignee is None:
+            logger.warning(
+                "opportunity.post_sale_task_skipped opportunity_id=%s reason=no_assignee", opportunity.id
+            )
+            return
+
+        from app.automation.actions import create_task
+
+        contact = self.contact_repo.get(organization_id, opportunity.contact_id)
+        contact_name = f"{contact.first_name} {contact.last_name}" if contact else "the client"
+        due_at = datetime.now(timezone.utc) + timedelta(days=POST_SALE_FOLLOW_UP_DAYS)
+
+        create_task(
+            self.db,
+            organization_id,
+            assigned_to_user_id=assignee,
+            title=f"Post-sale check-in — {contact_name}",
+            description=f"Follow up on \"{opportunity.title}\", closed {POST_SALE_FOLLOW_UP_DAYS} days ago.",
+            task_type="follow_up",
+            due_at=due_at,
+            contact_id=opportunity.contact_id,
+            property_id=opportunity.property_id,
+            opportunity_id=opportunity.id,
+            actor_user_id=actor_user_id,
+        )
 
     def _record_stage_change_activity(
         self, organization_id: uuid.UUID, opportunity: Opportunity, before_stage: str, after_stage: str, actor_user_id

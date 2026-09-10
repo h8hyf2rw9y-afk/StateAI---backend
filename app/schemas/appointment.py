@@ -45,6 +45,16 @@ class AppointmentUpdate(BaseModel):
     location: str | None = None
     appointment_type: AppointmentType | None = None
     status: AppointmentStatus | None = None
+    # Phase 5 — User Story F/K: not a column on Appointment itself (see
+    # app/models/appointment.py — unchanged). When provided alongside
+    # status="completed" (or the appointment is already completed),
+    # AppointmentService.update creates one real Activity from it instead
+    # of storing the text a second time here — "the outcome becomes
+    # meaningful CRM context" (Activity history, LeadContext, the Follow-up
+    # and Pipeline agents) without duplicating it onto this row too. Never
+    # itself returned by AppointmentRead — it's an instruction to the
+    # service, not a persisted field.
+    outcome_notes: str | None = None
 
 
 class AppointmentRead(ORMModel):

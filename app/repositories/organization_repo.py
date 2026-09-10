@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.organization import Organization, User
@@ -12,9 +13,16 @@ class OrganizationRepository:
     Deliberately NOT an OrgScopedRepository, same reasoning as
     FeatureRepository (app/repositories/feature_repo.py): Organization has
     no organization_id to scope by — it IS the tenant boundary everything
-    else scopes against. Create-only: there's no organization list/get-by-id
-    endpoint yet (no org-management UI exists), so nothing else is needed
-    here today — see app/services/onboarding_service.py, the only caller.
+    else scopes against. See app/services/onboarding_service.py for create.
+
+    `list_all` was added for app/automation/scheduler.py: the time-based
+    detectors (overdue tasks, upcoming appointments) run per-organization
+    (every detector call takes one organization_id and never reaches across
+    tenants — see app/automation/detectors.py), so the scheduler needs the
+    full list of organizations to iterate, the same way it would if this
+    were N separate per-tenant cron jobs instead of one process. Still no
+    organization list/get-by-id *API route* — this is only ever called from
+    that in-process scheduler, never exposed to a client.
     """
 
     def __init__(self, db: Session) -> None:
@@ -25,6 +33,9 @@ class OrganizationRepository:
         self.db.add(organization)
         self.db.flush()
         return organization
+
+    def list_all(self) -> list[Organization]:
+        return list(self.db.execute(select(Organization)).scalars().all())
 
 
 class UserRepository:

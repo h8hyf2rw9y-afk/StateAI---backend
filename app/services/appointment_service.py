@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.automation.actions import create_activity
 from app.models.appointment import Appointment
 from app.repositories.appointment_repo import AppointmentRepository
 from app.repositories.contact_repo import ContactRepository
@@ -13,6 +14,15 @@ from app.repositories.opportunity_repo import OpportunityRepository
 from app.repositories.property_repo import PropertyRepository
 from app.schemas.appointment import AppointmentCreate, AppointmentRead, AppointmentUpdate
 from app.services.audit_service import AuditService
+
+# appointment_type -> the closest real ActivityType (app/schemas/enums.py).
+# "showing" is the only appointment type with a direct match; every other
+# type (call/meeting/notary/signing/other) becomes a generic "meeting" —
+# there's no ActivityType for "notary"/"signing" specifically, and
+# inventing one wasn't part of this phase's brief (a new soft-enum value
+# would still be a schema addition to justify, not a free import).
+_OUTCOME_ACTIVITY_TYPE_BY_APPOINTMENT_TYPE = {"showing": "property_viewing"}
+_DEFAULT_OUTCOME_ACTIVITY_TYPE = "meeting"
 
 
 def _as_aware_utc(value: datetime) -> datetime:
@@ -92,6 +102,10 @@ class AppointmentService:
         before = AppointmentRead.model_validate(appointment).model_dump(mode="json")
 
         fields = data.model_dump(exclude_unset=True)
+        # Not a real Appointment column (app/models/appointment.py is
+        # unchanged) — see AppointmentUpdate.outcome_notes's own docstring.
+        # Popped before repo.update so it's never passed to setattr().
+        outcome_notes = fields.pop("outcome_notes", None)
         merged_start = fields.get("start_at", appointment.start_at)
         merged_end = fields.get("end_at", appointment.end_at)
         _check_start_before_end(merged_start, merged_end)
@@ -109,6 +123,33 @@ class AppointmentService:
         )
         self.db.commit()
         self.db.refresh(updated)
+
+        # Phase 5 — User Story F/K: recording a completed showing's outcome
+        # in the same PATCH that marks it completed, instead of two
+        # separate manual steps. Only fires when there's a real contact to
+        # attach the Activity to (Activity.contact_id is required — never
+        # fabricated) and the merged status actually is "completed"; a
+        # human can still resend outcome_notes on an already-completed
+        # appointment (e.g. to add detail) and get another real Activity —
+        # deliberately stateless, no hidden "already recorded" flag, so the
+        # caller stays in full control of when a note becomes history.
+        merged_status = fields.get("status", appointment.status)
+        if outcome_notes and merged_status == "completed" and updated.contact_id is not None:
+            activity_type = _OUTCOME_ACTIVITY_TYPE_BY_APPOINTMENT_TYPE.get(
+                updated.appointment_type, _DEFAULT_OUTCOME_ACTIVITY_TYPE
+            )
+            create_activity(
+                self.db,
+                organization_id,
+                contact_id=updated.contact_id,
+                activity_type=activity_type,
+                notes=outcome_notes,
+                occurred_at=datetime.now(timezone.utc),
+                property_id=updated.property_id,
+                opportunity_id=updated.opportunity_id,
+                actor_user_id=actor_user_id,
+            )
+
         return updated
 
     def delete(self, organization_id: uuid.UUID, appointment_id: uuid.UUID, actor_user_id: uuid.UUID | None) -> None:

@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from sqlalchemy import or_, select
 
 from app.models.task import Task
 from app.repositories.base import OrgScopedRepository
+
+# Statuses that mean "this task is finished, its due date no longer
+# matters" — used by list_overdue below. Not "cancelled" being the only
+# other terminal status is deliberate: TASK_STATUSES (app/schemas/enums.py)
+# only has these four, and "in_progress" is still open/overdue-eligible,
+# same as "pending".
+_TASK_CLOSED_STATUSES = ("completed", "cancelled")
 
 
 class TaskRepository(OrgScopedRepository[Task]):
@@ -64,5 +72,19 @@ class TaskRepository(OrgScopedRepository[Task]):
             .where(Task.organization_id == organization_id, or_(*conditions))
             .order_by(Task.due_at.asc())
             .limit(limit)
+        )
+        return list(self.db.execute(stmt).scalars().all())
+
+    def list_overdue(self, organization_id: uuid.UUID, *, now: datetime) -> list[Task]:
+        """
+        Used by app/automation/detectors.py's detect_overdue_tasks. `now` is
+        always passed in explicitly by the caller (never computed here) so
+        the whole detection path is testable with a controlled clock — see
+        that module's own docstring.
+        """
+        stmt = select(Task).where(
+            Task.organization_id == organization_id,
+            Task.due_at < now,
+            Task.status.notin_(_TASK_CLOSED_STATUSES),
         )
         return list(self.db.execute(stmt).scalars().all())

@@ -144,3 +144,94 @@ def test_appointments_are_isolated_by_organization(db_session: Session):
         assert client_a.delete(f"/api/v1/appointments/{appointment_b['id']}").status_code == 404
     finally:
         app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 — appointment outcome (User Story F/K): marking a showing
+# completed with outcome_notes records one real Activity in the same PATCH,
+# instead of two separate manual actions. See AppointmentUpdate.outcome_notes
+# and AppointmentService.update's own docstrings.
+# ---------------------------------------------------------------------------
+
+
+def test_completing_an_appointment_with_outcome_notes_creates_an_activity(client: TestClient):
+    contact = _create_contact(client)
+    appointment = client.post(
+        "/api/v1/appointments", json=_appointment_payload(contact_id=contact["id"])
+    ).json()
+
+    response = client.patch(
+        f"/api/v1/appointments/{appointment['id']}",
+        json={"status": "completed", "outcome_notes": "Le gustó pero quiere comparar dos propiedades más."},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    # outcome_notes is never itself persisted on the Appointment row.
+    assert "outcome_notes" not in response.json()
+
+    timeline = client.get(f"/api/v1/contacts/{contact['id']}/activities").json()
+    assert len(timeline) == 1
+    assert timeline[0]["notes"] == "Le gustó pero quiere comparar dos propiedades más."
+    assert timeline[0]["activity_type"] == "property_viewing"  # appointment_type="showing"
+
+
+def test_outcome_notes_without_completing_the_appointment_creates_no_activity(client: TestClient):
+    contact = _create_contact(client)
+    appointment = client.post(
+        "/api/v1/appointments", json=_appointment_payload(contact_id=contact["id"])
+    ).json()
+
+    client.patch(
+        f"/api/v1/appointments/{appointment['id']}",
+        json={"outcome_notes": "Solo confirmando la cita, aún no ocurre."},
+    )
+
+    assert client.get(f"/api/v1/contacts/{contact['id']}/activities").json() == []
+
+
+def test_completing_an_appointment_with_no_contact_does_not_fabricate_one(client: TestClient):
+    """No contact_id on the appointment — outcome_notes has nowhere real to attach, so it's silently skipped rather than inventing a contact."""
+    appointment = client.post("/api/v1/appointments", json=_appointment_payload()).json()
+    assert appointment["contact_id"] is None
+
+    response = client.patch(
+        f"/api/v1/appointments/{appointment['id']}",
+        json={"status": "completed", "outcome_notes": "x"},
+    )
+    assert response.status_code == 200  # the appointment update itself still succeeds
+
+
+def test_completing_without_outcome_notes_creates_no_activity(client: TestClient):
+    contact = _create_contact(client)
+    appointment = client.post(
+        "/api/v1/appointments", json=_appointment_payload(contact_id=contact["id"])
+    ).json()
+
+    client.patch(f"/api/v1/appointments/{appointment['id']}", json={"status": "completed"})
+
+    assert client.get(f"/api/v1/contacts/{contact['id']}/activities").json() == []
+
+
+def test_outcome_activity_carries_the_appointment_property_and_opportunity(client: TestClient):
+    contact = _create_contact(client)
+    prop = client.post(
+        "/api/v1/properties", json={"title": "Casa Cumbres", "property_type": "house", "status": "active", "price": 5000000}
+    ).json()
+    opportunity = client.post(
+        f"/api/v1/contacts/{contact['id']}/opportunities",
+        json={"opportunity_type": "buy", "title": "Compra Casa Cumbres"},
+    ).json()
+    appointment = client.post(
+        "/api/v1/appointments",
+        json=_appointment_payload(contact_id=contact["id"], property_id=prop["id"], opportunity_id=opportunity["id"]),
+    ).json()
+
+    client.patch(
+        f"/api/v1/appointments/{appointment['id']}",
+        json={"status": "completed", "outcome_notes": "Quiere comparar más opciones."},
+    )
+
+    timeline = client.get(f"/api/v1/contacts/{contact['id']}/activities").json()
+    outcome_activity = next(a for a in timeline if a["notes"] == "Quiere comparar más opciones.")
+    assert outcome_activity["property_id"] == prop["id"]
+    assert outcome_activity["opportunity_id"] == opportunity["id"]

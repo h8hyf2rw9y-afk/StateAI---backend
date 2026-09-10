@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import or_, select
 
@@ -61,5 +61,21 @@ class AppointmentRepository(OrgScopedRepository[Appointment]):
             .where(Appointment.organization_id == organization_id, or_(*conditions))
             .order_by(Appointment.start_at.asc())
             .limit(limit)
+        )
+        return list(self.db.execute(stmt).scalars().all())
+
+    def list_upcoming(self, organization_id: uuid.UUID, *, now: datetime, within: timedelta) -> list[Appointment]:
+        """
+        Used by app/automation/detectors.py's detect_upcoming_appointments.
+        `now` is always passed in explicitly (never computed here) so the
+        whole detection path is testable with a controlled clock. Only
+        "scheduled"/"confirmed" — a cancelled or already-completed
+        appointment isn't something to remind anyone about.
+        """
+        stmt = select(Appointment).where(
+            Appointment.organization_id == organization_id,
+            Appointment.status.in_(("scheduled", "confirmed")),
+            Appointment.start_at >= now,
+            Appointment.start_at <= now + within,
         )
         return list(self.db.execute(stmt).scalars().all())
