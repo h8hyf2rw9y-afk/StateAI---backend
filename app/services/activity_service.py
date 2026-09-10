@@ -24,6 +24,20 @@ class ActivityService:
         self.opportunity_repo = OpportunityRepository(db)
         self.audit = AuditService(db)
 
+    def list_recent(self, organization_id: uuid.UUID, *, limit: int = 20) -> list[Activity]:
+        """
+        The organization's most recent activity across every contact/
+        property/opportunity, newest first — for the Dashboard's "Recent
+        activity" feed (CRM Integration Gaps task). Deliberately just the
+        inherited OrgScopedRepository.list() (org-scoped, ordered by
+        created_at desc, limit/offset) with no new query logic: the existing
+        per-contact/per-property/per-opportunity list_for_* methods above
+        answer "what happened to this one thing"; this answers "what
+        happened lately, org-wide" — a plain, already-available read, not a
+        new capability.
+        """
+        return self.repo.list(organization_id, limit=limit)
+
     def get_or_404(self, organization_id: uuid.UUID, activity_id: uuid.UUID) -> Activity:
         activity = self.repo.get(organization_id, activity_id)
         if activity is None:
