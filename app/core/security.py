@@ -57,7 +57,35 @@ def get_current_claims(
     return claims
 
 
+def get_current_user_id(claims: dict = Depends(get_current_claims)) -> uuid.UUID:
+    """
+    Just the `sub` claim, parsed and 401-checked — split out of
+    get_current_org_user so app/api/routes/me.py's onboarding route can
+    depend on it too. That route exists specifically *because*
+    get_current_org_user's own `users`-row lookup below 403s for a caller
+    who hasn't been provisioned yet — it can't depend on
+    get_current_org_user itself, but still needs the same verified id.
+    """
+    sub = claims.get("sub")
+    if not sub:
+        raise _UNAUTHENTICATED
+    return uuid.UUID(sub)
+
+
+def build_current_user(claims: dict, user_row: User) -> CurrentUser:
+    """Assembles the CurrentUser both get_current_org_user and the onboarding route (app/api/routes/me.py) return, from the same two ingredients: the verified JWT claims and this app's own `users` row."""
+    app_metadata = claims.get("app_metadata") or {}
+    return CurrentUser(
+        id=user_row.id,
+        email=claims.get("email"),
+        organization_id=user_row.organization_id,
+        role=user_row.role,  # type: ignore[arg-type]
+        provider=app_metadata.get("provider"),
+    )
+
+
 def get_current_org_user(
+    user_id: uuid.UUID = Depends(get_current_user_id),
     claims: dict = Depends(get_current_claims),
     db: Session = Depends(get_db),
 ) -> CurrentUser:
@@ -67,29 +95,19 @@ def get_current_org_user(
     depends on this (not get_current_claims directly) so every query can be
     scoped by organization_id — see the repositories.
     """
-    sub = claims.get("sub")
-    if not sub:
-        raise _UNAUTHENTICATED
-
-    user_id = uuid.UUID(sub)
     user_row = db.get(User, user_id)
     if user_row is None:
         # A real, valid Supabase session — just not provisioned into an
         # organization yet. Distinct from 401 on purpose: the caller IS who
-        # they say they are, they just can't use the CRM yet.
+        # they say they are, they just can't use the CRM yet. See
+        # POST /me/organization (app/api/routes/me.py) — the self-service
+        # fix for exactly this state.
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This account is not yet assigned to an organization.",
         )
 
-    app_metadata = claims.get("app_metadata") or {}
-    return CurrentUser(
-        id=user_id,
-        email=claims.get("email"),
-        organization_id=user_row.organization_id,
-        role=user_row.role,  # type: ignore[arg-type]
-        provider=app_metadata.get("provider"),
-    )
+    return build_current_user(claims, user_row)
 
 
 def require_role(*roles: str):
