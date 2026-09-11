@@ -41,12 +41,17 @@ class AgentExecution(Base, UUIDPKMixin, CreatedAtMixin):
     )
     user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
-    # Deliberately nullable and unpopulated today: the LeadContext an agent
-    # read is already deterministic and reconstructible on demand via
-    # GET /ai/lead-context/{contact_id} (see app/ai/lead_context_tool.py), so
-    # storing a full duplicate on every single execution was judged not
-    # worth the extra DB write/storage yet. Kept as a real column (not
-    # omitted) so a future change to actually populate it needs no migration.
+    # Holds {"context_fingerprint": {...}} — a small, deterministic summary
+    # (per-entity counts and latest-modified timestamps) of the contact's
+    # CRM state at the moment this execution succeeded, NOT a duplicate of
+    # the LeadContext itself (that stays reconstructible on demand via
+    # GET /ai/lead-context/{contact_id}; see app/ai/lead_context_tool.py).
+    # Used by GET /ai/agent-executions/latest to decide whether a stored
+    # result is stale relative to the contact's current data — see
+    # LeadContextService.compute_context_fingerprint. Still nullable: a
+    # failed execution never gets one, and older rows written before this
+    # existed have none either (treated as "not stale" by the reader — see
+    # that route's own comment).
     input_snapshot: Mapped[dict | None] = mapped_column(_JSONVariant, nullable=True)
     # The agent's own structured Result schema, dumped via .model_dump(mode="json").
     # On a failed execution this holds {"error": "<exception class>", "message": "..."}

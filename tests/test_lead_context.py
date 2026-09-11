@@ -10,7 +10,7 @@ covers the route itself.
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import HTTPException
@@ -265,6 +265,72 @@ def test_lead_context_is_deterministic_across_calls(db_session: Session, organiz
     second = service.build(organization_id, contact.id)
 
     assert first.model_dump(exclude={"generated_at"}) == second.model_dump(exclude={"generated_at"})
+
+
+def test_context_fingerprint_is_stable_when_nothing_changed(db_session: Session, organization_id):
+    contact = _make_contact(db_session, organization_id)
+    db_session.add(BuyerRequirement(organization_id=organization_id, contact_id=contact.id, property_type="house"))
+    db_session.commit()
+
+    service = LeadContextService(db_session)
+    first = service.compute_context_fingerprint(organization_id, contact.id)
+    second = service.compute_context_fingerprint(organization_id, contact.id)
+
+    assert first == second
+    assert first["buyer_requirements"]["count"] == 1
+
+
+def test_context_fingerprint_changes_when_a_buyer_requirement_is_added(db_session: Session, organization_id):
+    contact = _make_contact(db_session, organization_id)
+    service = LeadContextService(db_session)
+    before = service.compute_context_fingerprint(organization_id, contact.id)
+
+    db_session.add(BuyerRequirement(organization_id=organization_id, contact_id=contact.id, property_type="house"))
+    db_session.commit()
+
+    after = service.compute_context_fingerprint(organization_id, contact.id)
+    assert before != after
+    assert before["buyer_requirements"]["count"] == 0
+    assert after["buyer_requirements"]["count"] == 1
+
+
+def test_context_fingerprint_changes_when_an_existing_buyer_requirement_is_updated(db_session: Session, organization_id):
+    """
+    Forces `updated_at` forward explicitly (rather than relying on a plain
+    field edit + commit) because SQLite's func.now() — unlike Postgres's —
+    only has one-second resolution, and this test can otherwise run fast
+    enough that "before" and "after" land in the same second; the fingerprint
+    logic itself (comparing whatever updated_at value is present) is what's
+    under test here, not the database's own onupdate timing.
+    """
+    contact = _make_contact(db_session, organization_id)
+    requirement = BuyerRequirement(organization_id=organization_id, contact_id=contact.id, property_type="house")
+    db_session.add(requirement)
+    db_session.commit()
+
+    service = LeadContextService(db_session)
+    before = service.compute_context_fingerprint(organization_id, contact.id)
+
+    requirement.status = "on_hold"
+    requirement.updated_at = datetime.now(timezone.utc) + timedelta(days=1)
+    db_session.commit()
+
+    after = service.compute_context_fingerprint(organization_id, contact.id)
+    assert before != after
+    assert before["buyer_requirements"]["count"] == after["buyer_requirements"]["count"] == 1
+
+
+def test_context_fingerprint_is_unaffected_by_a_different_contacts_data(db_session: Session, organization_id):
+    contact = _make_contact(db_session, organization_id)
+    other_contact = _make_contact(db_session, organization_id, first_name="Otro", last_name="Cliente")
+    service = LeadContextService(db_session)
+    before = service.compute_context_fingerprint(organization_id, contact.id)
+
+    db_session.add(BuyerRequirement(organization_id=organization_id, contact_id=other_contact.id, property_type="house"))
+    db_session.commit()
+
+    after = service.compute_context_fingerprint(organization_id, contact.id)
+    assert before == after
 
 
 def test_lead_context_route_returns_the_structured_context(client: TestClient):

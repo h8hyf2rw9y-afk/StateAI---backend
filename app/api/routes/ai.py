@@ -19,6 +19,7 @@ from app.schemas.lead_intelligence import LeadIntelligenceResult
 from app.schemas.pipeline import PipelineResult
 from app.schemas.user import CurrentUser
 from app.services.agent_execution_service import AgentExecutionService
+from app.services.lead_context_service import LeadContextService
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
@@ -98,6 +99,19 @@ def _run_and_record(agent_id: str, current_user: CurrentUser, contact_id: uuid.U
             ) from exc
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "The AI analysis service is currently unavailable.") from exc
 
+    # Computed after a successful run (not before) so it reflects the data
+    # the agent actually just reasoned over. Never raised as a hard failure
+    # of the whole request — an agent execution that already succeeded and
+    # is worth recording shouldn't be lost over a fingerprinting bug; the
+    # result would just be treated as always-stale (see the reader side,
+    # which also tolerates a missing fingerprint the same way).
+    try:
+        context_fingerprint = LeadContextService(db).compute_context_fingerprint(current_user.organization_id, contact_id)
+    except HTTPException:
+        raise
+    except Exception:
+        context_fingerprint = None
+
     AgentExecutionService(db).record_success(
         organization_id=current_user.organization_id,
         agent_name=agent_id,
@@ -108,6 +122,7 @@ def _run_and_record(agent_id: str, current_user: CurrentUser, contact_id: uuid.U
         model=execution.metadata.model,
         duration_ms=execution.metadata.duration_ms,
         result=execution.result,
+        context_fingerprint=context_fingerprint,
     )
     return execution.result
 

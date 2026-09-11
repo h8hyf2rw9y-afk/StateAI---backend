@@ -27,6 +27,22 @@ class AgentExecutionRead(ORMModel):
     created_at: datetime
 
 
+class AgentExecutionLatestRead(AgentExecutionRead):
+    """
+    Response for GET /ai/agent-executions/latest — the same fields as
+    AgentExecutionRead plus one computed field the frontend needs to decide
+    which of the three "no result / valid result / stale result" states to
+    render (see features/ai/components/*-panel.tsx): `is_stale` compares
+    this execution's stored context_fingerprint (see
+    LeadContextService.compute_context_fingerprint) against the contact's
+    current one. `is_stale` is False (not "unknown") when an older
+    execution has no stored fingerprint at all — see the route for why that
+    default was chosen.
+    """
+
+    is_stale: bool
+
+
 class AgentExecutionHumanActionUpdate(BaseModel):
     """The only client-writable slice of an AgentExecution — records whether an advisor acted on or dismissed the recommendation. Sets human_action_at server-side."""
 

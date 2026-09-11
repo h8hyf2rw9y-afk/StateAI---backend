@@ -145,6 +145,62 @@ class LeadContextService:
             generated_at=datetime.now(timezone.utc),
         )
 
+    def compute_context_fingerprint(self, organization_id: uuid.UUID, contact_id: uuid.UUID) -> dict:
+        """
+        A small, deterministic summary of "how fresh is this contact's data
+        right now" — built from the exact same repository calls build() uses
+        (so it can never define "what matters" any differently than the
+        context an agent actually receives; see this class's own docstring
+        and the three agent files, which all embed the *entire* LeadContext
+        into their prompt). Deliberately NOT the LeadContext object itself —
+        it only needs each entity list's size and most recent modification
+        time, not the data, to tell "did anything change" apart from "what
+        changed." Used to detect staleness of a previously stored
+        AgentExecution without duplicating CRM data into agent_executions
+        (see app/models/agent_execution.py's input_snapshot column and
+        AgentExecutionService.record_success).
+
+        Every referenced model (Contact, BuyerRequirement, PropertyInterest,
+        Property, Opportunity, Task, Appointment) uses TimestampMixin, so
+        `updated_at` is always real at the ORM level even though the
+        LeadContext *read schema* doesn't expose it for every nested type —
+        this method reads the ORM objects directly, not the Pydantic tree,
+        so that schema gap doesn't limit it. Activities have no
+        `updated_at` (they're an append-only log — see Activity's own
+        model), so `created_at` stands in for "most recent change" there;
+        a new activity is the only way that list ever changes.
+        """
+        contact = self._get_contact_or_404(organization_id, contact_id)
+
+        buyer_requirements = self.buyer_requirement_repo.list_for_contact(organization_id, contact_id)
+        property_interests = self.property_interest_repo.list_for_contact(organization_id, contact_id)
+        activities = self.activity_repo.list_for_contact(organization_id, contact_id)
+        opportunities = self.opportunity_repo.list_for_contact(organization_id, contact_id)
+        opportunity_ids = [o.id for o in opportunities]
+        tasks = self.task_repo.list_for_contact(organization_id, contact_id, opportunity_ids=opportunity_ids, limit=1000)
+        appointments = self.appointment_repo.list_for_contact(
+            organization_id, contact_id, opportunity_ids=opportunity_ids, limit=1000
+        )
+        properties_by_id = self._load_referenced_properties(organization_id, property_interests, activities, opportunities)
+
+        def _bucket(items, *, timestamp_attr: str) -> dict:
+            timestamps = [getattr(item, timestamp_attr) for item in items]
+            return {
+                "count": len(items),
+                "latest": max(timestamps).isoformat() if timestamps else None,
+            }
+
+        return {
+            "contact_updated_at": contact.updated_at.isoformat(),
+            "buyer_requirements": _bucket(buyer_requirements, timestamp_attr="updated_at"),
+            "property_interests": _bucket(property_interests, timestamp_attr="updated_at"),
+            "properties": _bucket(list(properties_by_id.values()), timestamp_attr="updated_at"),
+            "opportunities": _bucket(opportunities, timestamp_attr="updated_at"),
+            "tasks": _bucket(tasks, timestamp_attr="updated_at"),
+            "appointments": _bucket(appointments, timestamp_attr="updated_at"),
+            "activities": _bucket(activities, timestamp_attr="created_at"),
+        }
+
     def _get_contact_or_404(self, organization_id: uuid.UUID, contact_id: uuid.UUID) -> Contact:
         contact = self.contact_repo.get(organization_id, contact_id)
         if contact is None:

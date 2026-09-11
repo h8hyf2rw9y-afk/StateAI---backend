@@ -17,6 +17,7 @@ class AgentExecutionRepository(OrgScopedRepository[AgentExecution]):
         *,
         contact_id: uuid.UUID | None = None,
         agent_name: str | None = None,
+        status: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[AgentExecution]:
@@ -25,5 +26,10 @@ class AgentExecutionRepository(OrgScopedRepository[AgentExecution]):
             stmt = stmt.where(AgentExecution.contact_id == contact_id)
         if agent_name is not None:
             stmt = stmt.where(AgentExecution.agent_name == agent_name)
+        if status is not None:
+            # Added for the "latest valid result per (contact, agent)" lookup
+            # (AgentExecutionService.get_latest_succeeded) — a failed attempt
+            # must never shadow the last real success in that lookup.
+            stmt = stmt.where(AgentExecution.status == status)
         stmt = stmt.order_by(AgentExecution.created_at.desc()).limit(limit).offset(offset)
         return list(self.db.execute(stmt).scalars().all())

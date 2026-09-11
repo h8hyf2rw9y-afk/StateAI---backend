@@ -42,6 +42,7 @@ class AgentExecutionService:
         model: str,
         duration_ms: int,
         result: BaseModel,
+        context_fingerprint: dict | None = None,
     ) -> AgentExecution:
         execution = self.repo.create(
             organization_id,
@@ -49,7 +50,13 @@ class AgentExecutionService:
             agent_version=agent_version,
             contact_id=contact_id,
             user_id=user_id,
-            input_snapshot=None,
+            # See app/models/agent_execution.py — this column now holds the
+            # deterministic context fingerprint that was current at execution
+            # time (not a duplicate of the CRM data itself), used later to
+            # decide whether a stored result is stale. None for a contact-less
+            # execution (can't happen for the three agents today, but the
+            # field stays optional for forward compatibility).
+            input_snapshot={"context_fingerprint": context_fingerprint} if context_fingerprint is not None else None,
             output=result.model_dump(mode="json"),
             status="succeeded",
             provider=provider,
@@ -96,10 +103,28 @@ class AgentExecutionService:
         *,
         contact_id: uuid.UUID | None = None,
         agent_name: str | None = None,
+        status: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[AgentExecution]:
-        return self.repo.list(organization_id, contact_id=contact_id, agent_name=agent_name, limit=limit, offset=offset)
+        return self.repo.list(
+            organization_id, contact_id=contact_id, agent_name=agent_name, status=status, limit=limit, offset=offset
+        )
+
+    def get_latest_succeeded(
+        self, organization_id: uuid.UUID, *, contact_id: uuid.UUID, agent_name: str
+    ) -> AgentExecution | None:
+        """
+        "What did we last successfully tell this advisor about this contact
+        with this agent?" — the read path behind restoring a client's
+        previous analysis on switch (see GET /ai/agent-executions/latest).
+        Filtered to status="succeeded" so a since-superseded failed retry
+        never shadows the last real result; ordered newest-first by the
+        repo, so limit=1 is exactly "the latest relevant one" even when
+        there are many historical executions.
+        """
+        results = self.repo.list(organization_id, contact_id=contact_id, agent_name=agent_name, status="succeeded", limit=1)
+        return results[0] if results else None
 
     def get_or_404(self, organization_id: uuid.UUID, execution_id: uuid.UUID) -> AgentExecution:
         execution = self.repo.get(organization_id, execution_id)
