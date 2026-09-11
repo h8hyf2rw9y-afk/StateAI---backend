@@ -14,9 +14,37 @@ class Property(Base, UUIDPKMixin, TimestampMixin):
         ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
     )
     title: Mapped[str] = mapped_column(nullable=False)
-    # Soft enums (app/schemas/enums.py): property_type, status.
+    # Soft enums (app/schemas/enums.py): property_type, status, ownership_type, collaboration_status.
     property_type: Mapped[str] = mapped_column(nullable=False)
     status: Mapped[str] = mapped_column(nullable=False, default="draft")
+
+    # "Do I actually own/manage this listing, or am I pursuing it for a
+    # client through another advisor's inventory?" — real-estate advisors
+    # routinely show clients properties they don't own themselves (found on
+    # an external portal or through a collaborating advisor). Deliberately
+    # kept on Property itself rather than a new entity: every downstream
+    # consumer (PropertyInterest, Opportunity, MatchingService, the
+    # Properties list/detail pages) already works in terms of a Property
+    # row and needs zero changes to keep working for an "external" one —
+    # only MatchingService's automatic ranking treats the two differently
+    # (see its own docstring). `default="own"` means every property that
+    # existed before this column was added, and every new one created the
+    # normal way, is correctly "own" with no data migration needed.
+    ownership_type: Mapped[str] = mapped_column(nullable=False, default="own", server_default="own")
+    # The next four are only meaningful when ownership_type="external" —
+    # nullable and unused otherwise. Free text, not a foreign key to some
+    # new "Advisor" entity: this schema has no concept of an advisor
+    # outside this organization's own `users` (Supabase Auth-backed, not
+    # something a client-supplied name could ever match), so a name/contact
+    # pair is the same "freeform, not a rigid relationship" choice this
+    # codebase already makes for e.g. AuditLog's entity_type or a
+    # Notification's related_entity — inventing a cross-organization
+    # "Advisor" table for this would be real new infrastructure for a
+    # detail that's just informational text to the advisor using this CRM.
+    external_source: Mapped[str | None] = mapped_column(nullable=True)
+    external_advisor_name: Mapped[str | None] = mapped_column(nullable=True)
+    external_advisor_contact: Mapped[str | None] = mapped_column(nullable=True)
+    collaboration_status: Mapped[str | None] = mapped_column(nullable=True)
 
     price: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     currency: Mapped[str] = mapped_column(nullable=False, default="MXN")

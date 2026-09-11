@@ -2,10 +2,10 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from app.schemas.common import ORMModel
-from app.schemas.enums import PropertyStatus, PropertyType
+from app.schemas.enums import PropertyCollaborationStatus, PropertyOwnershipType, PropertyStatus, PropertyType
 
 
 class PropertyBase(BaseModel):
@@ -27,6 +27,19 @@ class PropertyBase(BaseModel):
     bathrooms: Decimal | None = None
     parking_spaces: int | None = None
     description: str | None = None
+    # See app/models/property.py's own docstring for the full reasoning.
+    ownership_type: PropertyOwnershipType = "own"
+    external_source: str | None = None
+    external_advisor_name: str | None = None
+    external_advisor_contact: str | None = None
+    collaboration_status: PropertyCollaborationStatus | None = None
+
+    @model_validator(mode="after")
+    def _external_fields_require_external_ownership(self) -> "PropertyBase":
+        """Mirrors BuyerRequirementBase's own min/max validator style: a cheap, honest guard against data that would silently mean nothing (collaboration details on a property marked as the advisor's own)."""
+        if self.ownership_type == "own" and self.collaboration_status is not None:
+            raise ValueError("collaboration_status only applies to an external (ownership_type='external') property.")
+        return self
 
 
 class PropertyCreate(PropertyBase):
@@ -52,6 +65,11 @@ class PropertyUpdate(BaseModel):
     bathrooms: Decimal | None = None
     parking_spaces: int | None = None
     description: str | None = None
+    ownership_type: PropertyOwnershipType | None = None
+    external_source: str | None = None
+    external_advisor_name: str | None = None
+    external_advisor_contact: str | None = None
+    collaboration_status: PropertyCollaborationStatus | None = None
 
 
 class PropertyFeatureRead(ORMModel):
@@ -79,6 +97,11 @@ class PropertyRead(ORMModel):
     bathrooms: Decimal | None
     parking_spaces: int | None
     description: str | None
+    ownership_type: str
+    external_source: str | None
+    external_advisor_name: str | None
+    external_advisor_contact: str | None
+    collaboration_status: str | None
     created_at: datetime
     updated_at: datetime
     features: list[PropertyFeatureRead] = []

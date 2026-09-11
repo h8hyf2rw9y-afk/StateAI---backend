@@ -11,6 +11,15 @@ from app.schemas.property import PropertyCreate, PropertyRead, PropertyUpdate
 from app.services.audit_service import AuditService
 
 
+def _check_ownership_consistency(prop: Property) -> None:
+    """Re-validates the *merged* row after a partial update — same reasoning as app/services/buyer_requirement_service.py's _check_minmax, needed because PropertyUpdate's own model has no way to see fields the caller didn't include in this particular PATCH."""
+    if prop.ownership_type == "own" and prop.collaboration_status is not None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "collaboration_status only applies to an external (ownership_type='external') property.",
+        )
+
+
 class PropertyService:
     def __init__(self, db: Session) -> None:
         self.db = db
@@ -52,7 +61,22 @@ class PropertyService:
     ) -> Property:
         prop = self.get_or_404(organization_id, property_id)
         before = PropertyRead.model_validate(prop).model_dump(mode="json")
-        updated = self.repo.update(prop, **data.model_dump(exclude_unset=True))
+
+        fields = data.model_dump(exclude_unset=True)
+        # OrgScopedRepository.update() skips None values (see its own
+        # docstring), so switching back to "own" must clear the
+        # external/collaboration fields directly on the object — the same
+        # "reopening" pattern app/services/opportunity_service.py already
+        # uses for closed_at/lost_reason when an opportunity moves out of a
+        # closed stage.
+        if fields.get("ownership_type") == "own" and prop.ownership_type != "own":
+            prop.external_source = None
+            prop.external_advisor_name = None
+            prop.external_advisor_contact = None
+            prop.collaboration_status = None
+
+        updated = self.repo.update(prop, **fields)
+        _check_ownership_consistency(updated)
         after = PropertyRead.model_validate(updated).model_dump(mode="json")
         self.audit.record(
             organization_id=organization_id,

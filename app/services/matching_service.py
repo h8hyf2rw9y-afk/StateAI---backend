@@ -47,6 +47,14 @@ class MatchingService:
         stmt = select(Property).where(
             Property.organization_id == organization_id,
             Property.status == "active",
+            # Only the advisor's own inventory is automatically ranked — an
+            # external/collaboration property (see app/models/property.py's
+            # ownership_type) was found for one specific client through a
+            # deliberate manual search, not something to surface as a
+            # general recommendation against every buyer requirement in the
+            # organization. It's still fully visible/manageable via the
+            # Properties list and PropertyInterest — just not auto-matched.
+            Property.ownership_type == "own",
         )
 
         if requirement.property_type:
@@ -123,7 +131,11 @@ class MatchingService:
 
         stmt = (
             select(Property)
-            .where(Property.organization_id == organization_id, Property.status == "active")
+            .where(
+                Property.organization_id == organization_id,
+                Property.status == "active",
+                Property.ownership_type == "own",  # see find_matches' identical filter for why
+            )
             .options(selectinload(Property.features))
         )
         candidates = list(self.db.execute(stmt).scalars().all())

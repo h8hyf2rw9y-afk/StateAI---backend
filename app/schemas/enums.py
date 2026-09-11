@@ -62,6 +62,21 @@ PROPERTY_STATUSES: tuple[str, ...] = (
 )
 PropertyStatus = Literal["draft", "active", "under_offer", "reserved", "sold", "rented", "inactive"]
 
+# app/models/property.py's ownership_type — "own" (the advisor's real
+# inventory) vs "external" (found through another advisor/portal, being
+# pursued for one specific client). "own" is the default for every
+# property that existed before this distinction did.
+PROPERTY_OWNERSHIP_TYPES: tuple[str, ...] = ("own", "external")
+PropertyOwnershipType = Literal["own", "external"]
+
+# Only meaningful when ownership_type="external" — the collaboration's own
+# progress, independent of PropertyInterest.status (which tracks the
+# *client's* interest, not the paperwork exchange with the other advisor).
+PROPERTY_COLLABORATION_STATUSES: tuple[str, ...] = (
+    "contacted", "info_requested", "info_received", "shared_with_client",
+)
+PropertyCollaborationStatus = Literal["contacted", "info_requested", "info_received", "shared_with_client"]
+
 BUYER_REQUIREMENT_PURPOSES: tuple[str, ...] = ("buy", "rent", "invest")
 BuyerRequirementPurpose = Literal["buy", "rent", "invest"]
 
