@@ -351,22 +351,28 @@ def test_renova_owner_is_not_visible_through_the_contacts_api(client: TestClient
 # --- the migration matches the model ----------------------------------------------------
 
 
-def _load_migration():
-    path = BACKEND_ROOT / "alembic" / "versions" / "a7c3e91d5b20_add_renova_cases.py"
-    spec = importlib.util.spec_from_file_location("renova_migration", path)
+def _load_migration(filename: str = "a7c3e91d5b20_add_renova_cases.py"):
+    path = BACKEND_ROOT / "alembic" / "versions" / filename
+    spec = importlib.util.spec_from_file_location(f"migration_{filename[:12]}", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-def _render_upgrade_sql() -> str:
-    """Renders the migration for PostgreSQL as text (offline mode) — no database is touched."""
-    module = _load_migration()
+ADDRESS_MIGRATION = "b81f4c2e7a63_add_renova_address_and_occupancy.py"
+
+
+def _render(module, direction: str) -> str:
+    """Renders a migration for PostgreSQL as text (offline mode) — no database is touched."""
     buffer = io.StringIO()
     context = MigrationContext.configure(dialect_name="postgresql", opts={"as_sql": True, "output_buffer": buffer})
     with Operations.context(context):
-        module.upgrade()
+        getattr(module, direction)()
     return buffer.getvalue()
+
+
+def _render_upgrade_sql() -> str:
+    return _render(_load_migration(), "upgrade")
 
 
 def test_migration_chain_and_shape():
@@ -381,12 +387,30 @@ def test_migration_chain_and_shape():
         assert f"REFERENCES {table} " not in sql
 
 
-def test_migration_columns_indexes_and_constraints_match_the_model():
-    sql = _render_upgrade_sql()
+def test_address_migration_chains_and_only_adds_nullable_columns_to_renova():
+    module = _load_migration(ADDRESS_MIGRATION)
+    assert module.revision == "b81f4c2e7a63"
+    assert module.down_revision == "a7c3e91d5b20"
+
+    sql = _render(module, "upgrade")
+    assert sql.count("ALTER TABLE renova_cases ADD COLUMN") == 5
+    assert "ALTER TABLE" in sql and sql.count("ALTER TABLE") == 5
+    assert "NOT NULL" not in sql and "CREATE TABLE" not in sql and "DROP" not in sql
+    for table in TRADITIONAL_TABLES:
+        assert table not in sql
+
+    down = _render(module, "downgrade")
+    assert down.count("DROP COLUMN") == 5 and "DROP TABLE" not in down
+
+
+def test_migrations_together_match_the_model():
+    sql = _render_upgrade_sql() + _render(_load_migration(ADDRESS_MIGRATION), "upgrade")
     table = RenovaCase.__table__
 
     for column in table.columns:
-        assert re.search(rf"^\s+{column.name} ", sql, re.MULTILINE), f"column {column.name} missing from migration"
+        created = re.search(rf"^\s+{column.name} ", sql, re.MULTILINE)
+        added = f"ADD COLUMN {column.name} " in sql
+        assert created or added, f"column {column.name} missing from the migrations"
     for index in table.indexes:
         assert f"CREATE INDEX {index.name} " in sql, f"index {index.name} missing from migration"
     for constraint in table.constraints:
@@ -396,11 +420,7 @@ def test_migration_columns_indexes_and_constraints_match_the_model():
 
 def test_migration_downgrade_drops_only_renova():
     module = _load_migration()
-    buffer = io.StringIO()
-    context = MigrationContext.configure(dialect_name="postgresql", opts={"as_sql": True, "output_buffer": buffer})
-    with Operations.context(context):
-        module.downgrade()
-    sql = buffer.getvalue()
+    sql = _render(module, "downgrade")
     assert "DROP TABLE renova_cases" in sql
     assert sql.count("DROP TABLE") == 1
 

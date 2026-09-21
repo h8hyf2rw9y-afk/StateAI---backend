@@ -20,6 +20,7 @@ from app.schemas.enums import (
     RenovaDeedsStatus,
     RenovaDwellingType,
     RenovaMaritalStatus,
+    RenovaOccupancyStatus,
     RenovaSource,
 )
 
@@ -40,7 +41,14 @@ Money = Annotated[Decimal, Field(ge=0, max_digits=14, decimal_places=2)]
 SecretIdentifier = Annotated[SecretStr, Field(min_length=4, max_length=30)]
 _SECRET_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9\-]+$")
 
+# Mexican postal code: exactly five digits.
+PostalCode = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^\d{5}$")]
+
 _OPTIONAL_TEXT_FIELDS = (
+    "street_address",
+    "neighborhood",
+    "municipality",
+    "postal_code",
     "spouse_name",
     "spouse_phone",
     "deeds_holder_name",
@@ -114,8 +122,14 @@ class RenovaCaseBase(_BlankToNoneMixin):
     marital_status: RenovaMaritalStatus | None = None
     spouse_name: Name | None = None
     spouse_phone: Phone | None = None
+    # Ubicación
+    street_address: ShortText | None = None
+    neighborhood: ShortText | None = None
+    municipality: ShortText | None = None
+    postal_code: PostalCode | None = None
     # Inmueble
     dwelling_type: RenovaDwellingType | None = None
+    occupancy_status: RenovaOccupancyStatus | None = None
     floors: int | None = Field(default=None, ge=0, le=100)
     bathrooms: Decimal | None = Field(default=None, ge=0, le=99, max_digits=3, decimal_places=1)
     bedrooms: int | None = Field(default=None, ge=0, le=99)
@@ -169,7 +183,12 @@ class RenovaCaseUpdate(_SecretFormatMixin, _BlankToNoneMixin):
     spouse_phone: Phone | None = None
     nss: SecretIdentifier | None = None
     credit_number: SecretIdentifier | None = None
+    street_address: ShortText | None = None
+    neighborhood: ShortText | None = None
+    municipality: ShortText | None = None
+    postal_code: PostalCode | None = None
     dwelling_type: RenovaDwellingType | None = None
+    occupancy_status: RenovaOccupancyStatus | None = None
     floors: int | None = Field(default=None, ge=0, le=100)
     bathrooms: Decimal | None = Field(default=None, ge=0, le=99, max_digits=3, decimal_places=1)
     bedrooms: int | None = Field(default=None, ge=0, le=99)
@@ -248,6 +267,11 @@ class RenovaCaseRead(_RenovaCaseFields):
     marital_status: str | None
     spouse_name: str | None
     spouse_phone: str | None
+    street_address: str | None
+    neighborhood: str | None
+    municipality: str | None
+    postal_code: str | None
+    occupancy_status: str | None
     floors: int | None
     bathrooms: Decimal | None
     bedrooms: int | None

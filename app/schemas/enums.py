@@ -389,6 +389,10 @@ PipelineAction = Literal[
 # may need to move a case backwards (e.g. offer_sent -> reviewing) after new
 # information, so any transition is allowed and every change is audited.
 RENOVA_CASE_STATUSES: tuple[str, ...] = (
+    # "draft": saved with "Guardar borrador" while the file is still being put
+    # together (same minimum data as any case — owner name and phone — but not
+    # yet a real prospect). "Guardar prospecto" moves it to "new".
+    "draft",
     "new",
     "reviewing",
     "offer_preparation",
@@ -400,7 +404,8 @@ RENOVA_CASE_STATUSES: tuple[str, ...] = (
     "cancelled",
 )
 RenovaCaseStatus = Literal[
-    "new", "reviewing", "offer_preparation", "offer_sent", "negotiating", "accepted", "purchased", "rejected", "cancelled",
+    "draft", "new", "reviewing", "offer_preparation", "offer_sent", "negotiating", "accepted", "purchased", "rejected",
+    "cancelled",
 ]
 
 # Initially only WhatsApp is how cases arrive; the other values exist so
@@ -429,3 +434,8 @@ RenovaDwellingType = Literal["house", "apartment", "duplex"]
 # Three-valued on purpose: "we haven't asked yet" is not the same as "no".
 RENOVA_DEEDS_STATUSES: tuple[str, ...] = ("yes", "no", "unknown")
 RenovaDeedsStatus = Literal["yes", "no", "unknown"]
+
+# Who is living in the property right now ("Situación actual") — it matters
+# for how (and how fast) a purchase can close.
+RENOVA_OCCUPANCY_STATUSES: tuple[str, ...] = ("lives_there", "vacant", "rented", "lent", "other")
+RenovaOccupancyStatus = Literal["lives_there", "vacant", "rented", "lent", "other"]

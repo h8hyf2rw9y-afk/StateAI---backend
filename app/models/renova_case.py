@@ -80,9 +80,19 @@ class RenovaCase(Base, UUIDPKMixin, TimestampMixin):
     nss_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     credit_number_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # --- Ubicación --------------------------------------------------------
+    # Plain columns on the case (a Renova property is not an inventory
+    # Property — see the class docstring). All optional while a case is being
+    # captured. Added in migration b81f4c2e7a63.
+    street_address: Mapped[str | None] = mapped_column(nullable=True)  # "Calle y número"
+    neighborhood: Mapped[str | None] = mapped_column(nullable=True)  # "Colonia"
+    municipality: Mapped[str | None] = mapped_column(nullable=True)  # "Municipio"
+    postal_code: Mapped[str | None] = mapped_column(nullable=True)  # 5-digit Mexican CP
+
     # --- Inmueble ---------------------------------------------------------
-    # Soft enums: dwelling_type, has_deeds.
+    # Soft enums: dwelling_type, occupancy_status ("Situación actual"), has_deeds.
     dwelling_type: Mapped[str | None] = mapped_column(nullable=True)
+    occupancy_status: Mapped[str | None] = mapped_column(nullable=True)
     floors: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     bathrooms: Mapped[Decimal | None] = mapped_column(Numeric(3, 1), nullable=True)  # half-baths are common
     bedrooms: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)

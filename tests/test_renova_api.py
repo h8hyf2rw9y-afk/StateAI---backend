@@ -492,3 +492,61 @@ def test_requires_authentication():
 
     assert TC(app).get(URL).status_code in (401, 403)
     assert TC(app).post(URL, json={}).status_code in (401, 403)
+
+
+# --- address, occupancy and draft status ---------------------------------------
+
+
+def test_address_and_occupancy_round_trip_and_update(client: TestClient, current_user: CurrentUser):
+    case = _create(
+        client,
+        current_user,
+        street_address="  Av. Constitución 123  ",
+        neighborhood="Centro",
+        municipality="Monterrey",
+        postal_code="64000",
+        occupancy_status="rented",
+    )
+    assert case["street_address"] == "Av. Constitución 123"
+    assert (case["neighborhood"], case["municipality"], case["postal_code"]) == ("Centro", "Monterrey", "64000")
+    assert case["occupancy_status"] == "rented"
+
+    fetched = client.get(f"{URL}/{case['id']}").json()
+    assert fetched["postal_code"] == "64000" and fetched["occupancy_status"] == "rented"
+
+    updated = client.patch(f"{URL}/{case['id']}", json={"municipality": "San Nicolás", "occupancy_status": "vacant"}).json()
+    assert updated["municipality"] == "San Nicolás" and updated["occupancy_status"] == "vacant"
+    assert updated["street_address"] == "Av. Constitución 123"
+
+
+def test_address_and_occupancy_are_optional_and_blank_becomes_null(client: TestClient, current_user: CurrentUser):
+    case = _create(client, current_user, street_address="   ", postal_code="")
+    assert case["street_address"] is None and case["postal_code"] is None
+    assert case["occupancy_status"] is None
+
+
+@pytest.mark.parametrize("value", ["6400", "640001", "6400A", "64 00"])
+def test_postal_code_must_be_exactly_five_digits(client: TestClient, current_user: CurrentUser, value: str):
+    assert client.post(URL, json=payload(current_user.id, postal_code=value)).status_code == 422
+
+
+def test_invalid_occupancy_status_is_rejected(client: TestClient, current_user: CurrentUser):
+    assert client.post(URL, json=payload(current_user.id, occupancy_status="squatters")).status_code == 422
+
+
+def test_list_items_do_not_carry_the_address(client: TestClient, current_user: CurrentUser):
+    _create(client, current_user, street_address="Calle Secreta 9")
+    row = client.get(URL).json()[0]
+    assert "street_address" not in row
+
+
+def test_draft_status_can_be_created_and_promoted_with_an_audited_status_change(
+    client: TestClient, current_user: CurrentUser, db_session: Session
+):
+    case = _create(client, current_user, status="draft")
+    assert case["status"] == "draft"
+    assert [c["status"] for c in client.get(URL, params={"status": "draft"}).json()] == ["draft"]
+
+    promoted = client.patch(f"{URL}/{case['id']}", json={"status": "new"}).json()
+    assert promoted["status"] == "new"
+    assert "RENOVA_CASE_STATUS_CHANGED" in _audit_actions(db_session, case["id"])
