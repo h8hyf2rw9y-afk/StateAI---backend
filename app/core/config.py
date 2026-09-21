@@ -28,6 +28,16 @@ class Settings(BaseSettings):
     # Comma-separated list of origins allowed to call this API (CORS).
     frontend_origins: str = "http://localhost:3000"
 
+    # Fernet key(s) protecting Renova's most sensitive owner fields (NSS and
+    # credit number) at rest — see app/core/crypto.py. A urlsafe-base64
+    # 32-byte key; generate one with:
+    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    # Several keys may be given comma-separated (newest first) to rotate
+    # without losing already-stored values. `None` means "not configured":
+    # the API then refuses to STORE those two fields (never falls back to
+    # plaintext) but everything else about Renova keeps working.
+    renova_encryption_key: str | None = None
+
     # Which LLMProvider app/ai/llm/factory.py builds — see app/ai/llm/base.py
     # for the abstraction both branches implement. "ollama" (the default) is
     # the local-development choice: no API key, no network egress, nothing

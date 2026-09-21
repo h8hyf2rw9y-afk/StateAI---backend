@@ -374,3 +374,58 @@ PipelineAction = Literal[
     "review_offer", "negotiate", "collect_documents", "review_financing", "coordinate_notary", "create_task",
     "monitor",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Renova — the independent house-flipping evaluation module (see
+# app/models/renova_case.py). Deliberately its own value sets, not reusing
+# ContactSource/PropertyType/etc.: a Renova case is not a Contact, a lead, or
+# an inventory Property, and its vocabulary (e.g. "duplex", marital regimes)
+# is specific to how these cases are captured from WhatsApp conversations.
+# ---------------------------------------------------------------------------
+
+# "new" through "purchased" is the intended happy-path order; "rejected" and
+# "cancelled" are the two exits. Not enforced as a state machine — an advisor
+# may need to move a case backwards (e.g. offer_sent -> reviewing) after new
+# information, so any transition is allowed and every change is audited.
+RENOVA_CASE_STATUSES: tuple[str, ...] = (
+    "new",
+    "reviewing",
+    "offer_preparation",
+    "offer_sent",
+    "negotiating",
+    "accepted",
+    "purchased",
+    "rejected",
+    "cancelled",
+)
+RenovaCaseStatus = Literal[
+    "new", "reviewing", "offer_preparation", "offer_sent", "negotiating", "accepted", "purchased", "rejected", "cancelled",
+]
+
+# Initially only WhatsApp is how cases arrive; the other values exist so
+# adding a channel later is a one-line change here (soft enum, no migration).
+RENOVA_SOURCES: tuple[str, ...] = ("whatsapp", "phone", "referral", "website", "other")
+RenovaSource = Literal["whatsapp", "phone", "referral", "website", "other"]
+
+# Marital status *at the time the owner acquired the property* — it decides
+# whose signature/consent the sale needs, which is why it's captured at all.
+RENOVA_MARITAL_STATUSES: tuple[str, ...] = (
+    "single",
+    "married_conjugal_partnership",
+    "married_separate_property",
+    "divorced",
+    "widowed",
+    "common_law",
+    "unknown",
+)
+RenovaMaritalStatus = Literal[
+    "single", "married_conjugal_partnership", "married_separate_property", "divorced", "widowed", "common_law", "unknown",
+]
+
+RENOVA_DWELLING_TYPES: tuple[str, ...] = ("house", "apartment", "duplex")
+RenovaDwellingType = Literal["house", "apartment", "duplex"]
+
+# Three-valued on purpose: "we haven't asked yet" is not the same as "no".
+RENOVA_DEEDS_STATUSES: tuple[str, ...] = ("yes", "no", "unknown")
+RenovaDeedsStatus = Literal["yes", "no", "unknown"]
