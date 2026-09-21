@@ -9,6 +9,13 @@ import os
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 os.environ.setdefault("SUPABASE_URL", "https://test-project.supabase.co")
 
+# A throwaway Fernet key so Renova's NSS/credit-number encryption works in
+# tests without any real secret (see app/core/crypto.py). Generated fresh per
+# test process; never a value that could decrypt anything real.
+from cryptography.fernet import Fernet  # noqa: E402
+
+os.environ.setdefault("RENOVA_ENCRYPTION_KEY", Fernet.generate_key().decode())
+
 import uuid  # noqa: E402
 
 import pytest  # noqa: E402

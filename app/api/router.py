@@ -15,6 +15,7 @@ from app.api.routes import (
     opportunities,
     properties,
     property_interests,
+    renova,
     tasks,
 )
 
@@ -36,3 +37,4 @@ api_router.include_router(tasks.router)
 api_router.include_router(appointments.router)
 api_router.include_router(calendar_connections.router)
 api_router.include_router(notifications.router)
+api_router.include_router(renova.router)
