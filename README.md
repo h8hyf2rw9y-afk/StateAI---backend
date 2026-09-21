@@ -177,6 +177,19 @@ This is deliberately **not a workflow/state-transition engine** — any stage va
 
 **Authorization**: deliberately **not** role-gated, unlike deleting a Contact/Property/Buyer Requirement/Property Interest. Creating, updating, and changing an opportunity's stage (including closing won/lost) are normal day-to-day agent operations — the same category as Task/Appointment CRUD — not the kind of destructive action `require_role` exists for; see [Authorization Model](#authorization-model).
 
+## Renova (independent house-flipping module)
+
+**Renova** evaluates potential purchases of properties for flipping. It shares only the *Leads page* in the UI with the traditional CRM; in the domain it is fully separate: one table (`renova_cases`, model `RenovaCase`) with **no foreign key to or from** contacts, contact roles, buyer requirements, property interests, opportunities or properties, and nothing about it reaches the AI layer (`LeadContext` and the agents never read it).
+
+- **Endpoints** (`app/api/routes/renova.py`): `POST`/`GET /renova/cases`, `GET`/`PATCH /renova/cases/{id}`. No `DELETE` — a case that is no longer pursued is moved to status `cancelled`. The list is lean (owner, phone, dwelling, money summary, status), searchable by owner name/phone and filterable by `status` and `assigned_user_id`. The assigned advisor must be a user of the caller's own organization.
+- **Money** is `Numeric(14,2)`, MXN by default, optional, non-negative (Pydantic and DB `CHECK`). `total_debt` (property tax + other + water + electricity + gas) is derived on read, not stored.
+- **NSS and credit number** are stored only as Fernet ciphertext (`app/core/crypto.py`), returned only masked (`••••1234`) on the detail response and never in listings, and excluded from AuditLog snapshots, logs, errors and any AI prompt. Set `RENOVA_ENCRYPTION_KEY` (see `.env.example`); without it those two fields are refused with a 503 — never stored in plaintext. Several comma-separated keys allow rotation.
+- **Audit**: `RENOVA_CASE_CREATED` / `_UPDATED` / `_STATUS_CHANGED` / `_ASSIGNEE_CHANGED` / `_FINANCIALS_UPDATED`.
+
+### Active clients (`GET /contacts?active=true`)
+
+Derived, not stored: a contact is *active* when it has an open Opportunity (stage not `won`/`lost`) **or** a Buyer Requirement whose status is not `cancelled`/`fulfilled`, evaluated with two `EXISTS` subqueries in the same SELECT (`active_contact_condition` in `app/repositories/contact_repo.py`). `active=false` returns the complement; omitting it returns every contact as before. Owning an active Property is not a criterion because the data model has no Property→Contact owner link.
+
 ## Demo data
 
 `scripts/seed_demo_data.py` populates 20 fictional contacts spanning both ways a person enters the CRM (10 interested in a specific property, 10 with a buyer requirement — including the Property-Interest→not-interested→Buyer-Requirement transition case and a contact whose requirement changed over time), plus ~14 supporting properties and a chronological Activity timeline (2-5 entries) for every contact, under one dedicated **"State AI Demo Organization"**.
