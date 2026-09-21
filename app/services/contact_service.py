@@ -17,8 +17,10 @@ class ContactService:
         self.repo = ContactRepository(db)
         self.audit = AuditService(db)
 
-    def list(self, organization_id: uuid.UUID, *, limit: int = 50, offset: int = 0) -> list[Contact]:
-        return self.repo.list(organization_id, limit=limit, offset=offset)
+    def list(
+        self, organization_id: uuid.UUID, *, limit: int = 50, offset: int = 0, active: bool | None = None
+    ) -> list[Contact]:
+        return self.repo.list(organization_id, limit=limit, offset=offset, active=active)
 
     def get_or_404(self, organization_id: uuid.UUID, contact_id: uuid.UUID) -> Contact:
         contact = self.repo.get(organization_id, contact_id)

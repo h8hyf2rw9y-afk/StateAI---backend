@@ -26,10 +26,14 @@ router = APIRouter(prefix="/contacts", tags=["contacts"])
 def list_contacts(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    active: bool | None = Query(
+        None,
+        description="true = only active clients (an open Opportunity or a live Buyer Requirement); false = only the rest; omitted = every contact.",
+    ),
     current_user: CurrentUser = Depends(get_current_org_user),
     db: Session = Depends(get_db),
 ) -> list[ContactRead]:
-    return ContactService(db).list(current_user.organization_id, limit=limit, offset=offset)
+    return ContactService(db).list(current_user.organization_id, limit=limit, offset=offset, active=active)
 
 
 @router.post("", response_model=ContactRead, status_code=status.HTTP_201_CREATED)
