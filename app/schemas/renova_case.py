@@ -35,11 +35,20 @@ ShortText = Annotated[str, StringConstraints(strip_whitespace=True, max_length=3
 LongText = Annotated[str, StringConstraints(strip_whitespace=True, max_length=5000)]
 Money = Annotated[Decimal, Field(ge=0, max_digits=14, decimal_places=2)]
 
-# NSS / credit number: letters, digits and hyphens only, so validation can
-# never need to echo the value back. (A Mexican NSS is 11 digits and an
-# Infonavit credit number 10, but other institutions differ — kept loose.)
-SecretIdentifier = Annotated[SecretStr, Field(min_length=4, max_length=30)]
-_SECRET_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9\-]+$")
+# NSS / credit number are IDENTIFIERS (never numbers: leading zeros matter),
+# captured as digits, optionally grouped with spaces or hyphens for readability
+# ("12 34-56"), and normalized to bare digits BEFORE validation and encryption.
+# Validation messages are static — they never contain what was typed.
+#   * NSS: exactly 11 digits (the IMSS social-security number).
+#   * Credit number: digits only, 6-20 of them. Infonavit uses 10, but other
+#     institutions differ, so only a sane range is enforced.
+NSS_LENGTH = 11
+CREDIT_NUMBER_MIN_LENGTH = 6
+CREDIT_NUMBER_MAX_LENGTH = 20
+_MAX_RAW_SECRET_LENGTH = 60  # before normalization, so a hostile payload is cut off early
+SecretIdentifier = SecretStr
+_SEPARATORS_RE = re.compile(r"[\s\-]")
+_DIGITS_RE = re.compile(r"^[0-9]+$")
 
 # Mexican postal code: exactly five digits.
 PostalCode = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^\d{5}$")]
@@ -100,13 +109,43 @@ class _BlankToNoneMixin(BaseModel):
 
 
 class _SecretFormatMixin(BaseModel):
-    """pydantic can't apply `pattern` to a SecretStr, so the format check lives here — and its error message deliberately never includes the value."""
+    """
+    pydantic can't apply `pattern` to a SecretStr, so normalization and the
+    format check live here. Anything that is not digits — including a masked
+    display value like "•••••••4821" or a placeholder of asterisks — is
+    rejected, so a mask can never be stored as if it were the real number.
+    """
 
-    @field_validator("nss", "credit_number", mode="after", check_fields=False)
+    @field_validator("nss", "credit_number", mode="before", check_fields=False)
     @classmethod
-    def _valid_format(cls, value: SecretStr | None) -> SecretStr | None:
-        if value is not None and not _SECRET_IDENTIFIER_RE.match(value.get_secret_value()):
-            raise ValueError("Only letters, digits and hyphens are allowed.")
+    def _normalize(cls, value):
+        if value is None:
+            return None
+        raw = value.get_secret_value() if isinstance(value, SecretStr) else value
+        if not isinstance(raw, str):
+            raise ValueError("Must be text made of digits.")
+        if len(raw) > _MAX_RAW_SECRET_LENGTH:
+            raise ValueError("Value is too long.")
+        return _SEPARATORS_RE.sub("", raw)
+
+    @field_validator("nss", mode="after", check_fields=False)
+    @classmethod
+    def _valid_nss(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None:
+            digits = value.get_secret_value()
+            if not _DIGITS_RE.match(digits) or len(digits) != NSS_LENGTH:
+                raise ValueError(f"NSS must contain exactly {NSS_LENGTH} digits.")
+        return value
+
+    @field_validator("credit_number", mode="after", check_fields=False)
+    @classmethod
+    def _valid_credit_number(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None:
+            digits = value.get_secret_value()
+            if not _DIGITS_RE.match(digits) or not CREDIT_NUMBER_MIN_LENGTH <= len(digits) <= CREDIT_NUMBER_MAX_LENGTH:
+                raise ValueError(
+                    f"Credit number must contain {CREDIT_NUMBER_MIN_LENGTH} to {CREDIT_NUMBER_MAX_LENGTH} digits."
+                )
         return value
 
 
@@ -287,3 +326,21 @@ class RenovaCaseRead(_RenovaCaseFields):
     # columns via app/core/crypto.mask_encrypted.
     nss_masked: str | None = None
     credit_number_masked: str | None = None
+    has_nss: bool = False
+    has_credit_number: bool = False
+
+
+class RenovaSensitiveData(BaseModel):
+    """
+    The ONLY schema that carries the full NSS / credit number. Returned solely
+    by GET /renova/cases/{id}/sensitive-data (authorized, audited, no-store) —
+    never part of any other response, listing, snapshot or log.
+    """
+
+    nss: str | None = None
+    credit_number: str | None = None
+
+    def __repr__(self) -> str:  # never let a stray print/log show the values
+        return "RenovaSensitiveData(nss=<hidden>, credit_number=<hidden>)"
+
+    __str__ = __repr__

@@ -1,12 +1,18 @@
 import uuid
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import get_current_org_user
 from app.schemas.enums import RenovaCaseStatus
-from app.schemas.renova_case import RenovaCaseCreate, RenovaCaseListItem, RenovaCaseRead, RenovaCaseUpdate
+from app.schemas.renova_case import (
+    RenovaCaseCreate,
+    RenovaCaseListItem,
+    RenovaCaseRead,
+    RenovaCaseUpdate,
+    RenovaSensitiveData,
+)
 from app.schemas.user import CurrentUser
 from app.services.renova_case_service import RenovaCaseService
 
@@ -53,6 +59,24 @@ def get_renova_case(
     db: Session = Depends(get_db),
 ) -> RenovaCaseRead:
     return RenovaCaseService(db).get(current_user.organization_id, case_id)
+
+
+@router.get("/{case_id}/sensitive-data", response_model=RenovaSensitiveData)
+def reveal_renova_sensitive_data(
+    case_id: uuid.UUID,
+    response: Response,
+    current_user: CurrentUser = Depends(get_current_org_user),
+    db: Session = Depends(get_db),
+) -> RenovaSensitiveData:
+    """
+    The full NSS and credit number of one case — the only endpoint that ever
+    returns them. Authorized (owner/admin or the assigned advisor), audited
+    without the values, and never cacheable.
+    """
+    data = RenovaCaseService(db).reveal_sensitive_data(current_user, case_id)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return data
 
 
 @router.patch("/{case_id}", response_model=RenovaCaseRead)

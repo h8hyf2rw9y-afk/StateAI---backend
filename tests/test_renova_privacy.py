@@ -32,9 +32,15 @@ from app.models.renova_case import RenovaCase
 from app.schemas.user import CurrentUser
 
 URL = "/api/v1/renova/cases"
-FAKE_NSS = "TESTNSS4455667"
-FAKE_CREDIT = "TESTCRED9081726"
+FAKE_NSS = "00445566789"
+FAKE_CREDIT = "0908172630"
+REPLACEMENT_NSS = "99887766554"
 NSS_LAST4 = FAKE_NSS[-4:]
+
+
+def mask(value: str) -> str:
+    return "•" * (len(value) - 4) + value[-4:]
+
 CREDIT_LAST4 = FAKE_CREDIT[-4:]
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
@@ -94,8 +100,8 @@ def test_create_and_detail_return_only_masked_values(client: TestClient, current
     detail = client.get(f"{URL}/{created['id']}").json()
 
     for body in (created, detail):
-        assert body["nss_masked"] == f"••••{NSS_LAST4}"
-        assert body["credit_number_masked"] == f"••••{CREDIT_LAST4}"
+        assert body["nss_masked"] == mask(FAKE_NSS)
+        assert body["credit_number_masked"] == mask(FAKE_CREDIT)
         raw = json.dumps(body)
         assert FAKE_NSS not in raw and FAKE_CREDIT not in raw
         # No field named like the write-only input is echoed back.
@@ -123,7 +129,7 @@ def test_a_case_without_secrets_reports_null_masks(client: TestClient, current_u
 
 def test_short_secrets_are_fully_masked():
     assert crypto.mask_secret("1234") == "••••"
-    assert crypto.mask_secret("abcd12345") == "••••2345"
+    assert crypto.mask_secret("012345678") == "•••••5678"
     assert crypto.mask_secret(None) == "••••"
 
 
@@ -137,16 +143,16 @@ def test_sensitive_input_validation_never_echoes_the_value(client: TestClient, c
 def test_patch_replaces_and_clears_sensitive_values(client: TestClient, current_user: CurrentUser):
     created = _create_with_secrets(client, current_user)
 
-    replaced = client.patch(f"{URL}/{created['id']}", json={"nss": "REPLACED0099887"}).json()
-    assert replaced["nss_masked"] == "••••9887"
-    assert replaced["credit_number_masked"] == f"••••{CREDIT_LAST4}"  # untouched
+    replaced = client.patch(f"{URL}/{created['id']}", json={"nss": REPLACEMENT_NSS}).json()
+    assert replaced["nss_masked"] == mask(REPLACEMENT_NSS)
+    assert replaced["credit_number_masked"] == mask(FAKE_CREDIT)  # untouched
 
     cleared = client.patch(f"{URL}/{created['id']}", json={"credit_number": None}).json()
     assert cleared["credit_number_masked"] is None
-    assert cleared["nss_masked"] == "••••9887"
+    assert cleared["nss_masked"] == mask(REPLACEMENT_NSS)
 
     untouched = client.patch(f"{URL}/{created['id']}", json={"notes": "solo notas"}).json()
-    assert untouched["nss_masked"] == "••••9887"
+    assert untouched["nss_masked"] == mask(REPLACEMENT_NSS)
 
 
 # --- encryption not configured ----------------------------------------------------
@@ -197,7 +203,7 @@ def test_key_rotation_with_multiple_keys_still_decrypts_old_values(
     new_key = Fernet.generate_key().decode()
     monkeypatch.setattr(settings, "renova_encryption_key", f"{new_key},{old_key}")
 
-    assert client.get(f"{URL}/{created['id']}").json()["nss_masked"] == f"••••{NSS_LAST4}"
+    assert client.get(f"{URL}/{created['id']}").json()["nss_masked"] == mask(FAKE_NSS)
 
 
 # --- audit -----------------------------------------------------------------------
@@ -212,12 +218,12 @@ def test_audit_snapshots_never_contain_sensitive_values_or_even_their_last_four(
     client: TestClient, current_user: CurrentUser, db_session: Session
 ):
     created = _create_with_secrets(client, current_user)
-    client.patch(f"{URL}/{created['id']}", json={"nss": "REPLACED0099887", "notes": "edit"})
+    client.patch(f"{URL}/{created['id']}", json={"nss": REPLACEMENT_NSS, "notes": "edit"})
     client.patch(f"{URL}/{created['id']}", json={"credit_number": None})
 
     blob = _all_audit_json(db_session, created["id"])
 
-    for secret in (FAKE_NSS, FAKE_CREDIT, "REPLACED0099887", NSS_LAST4, CREDIT_LAST4, "9887"):
+    for secret in (FAKE_NSS, FAKE_CREDIT, REPLACEMENT_NSS, NSS_LAST4, CREDIT_LAST4, "6554"):
         assert secret not in blob
     assert "nss_masked" not in blob and "credit_number_masked" not in blob
     assert "nss_encrypted" not in blob and "credit_number_encrypted" not in blob
@@ -230,7 +236,7 @@ def test_audit_records_that_a_sensitive_field_changed_without_saying_what_it_bec
     client: TestClient, current_user: CurrentUser, db_session: Session
 ):
     created = _create_with_secrets(client, current_user)
-    client.patch(f"{URL}/{created['id']}", json={"nss": "REPLACED0099887"})
+    client.patch(f"{URL}/{created['id']}", json={"nss": REPLACEMENT_NSS})
 
     row = db_session.query(AuditLog).filter(AuditLog.action == "RENOVA_CASE_UPDATED").one()
     assert row.after_data["sensitive_fields_changed"] == ["nss"]

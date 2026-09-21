@@ -14,7 +14,7 @@ os.environ.setdefault("SUPABASE_URL", "https://test-project.supabase.co")
 # test process; never a value that could decrypt anything real.
 from cryptography.fernet import Fernet  # noqa: E402
 
-os.environ.setdefault("RENOVA_ENCRYPTION_KEY", Fernet.generate_key().decode())
+os.environ["RENOVA_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
 
 import uuid  # noqa: E402
 

@@ -17,8 +17,9 @@ Rules this module enforces for every caller:
   * `decrypt` never raises on a bad/rotated-away token — it returns None, so a
     key problem degrades a masked display to "unknown" instead of 500-ing a
     detail page (and never logs the token).
-  * Nothing here (or anywhere) exposes a way for an API to return the full
-    value: reads only ever get `mask_secret(...)`.
+  * Ordinary reads only ever get `mask_secret(...)`. The ONE way to get a
+    full value back is `reveal_secret`, used solely by the authorized,
+    audited, no-store reveal endpoint (see RenovaCaseService.reveal_sensitive_data).
 
 This data must never reach an AI agent, an audit snapshot, a log line, or a
 public fixture — see app/services/renova_case_service.py and
@@ -70,15 +71,40 @@ def decrypt_secret(token: str) -> str | None:
         return None
 
 
+class SecretDecryptionError(RuntimeError):
+    """A stored token could not be decrypted (wrong/rotated-away key, or tampered ciphertext). Static message on purpose."""
+
+    def __init__(self) -> None:
+        super().__init__("Stored sensitive data could not be decrypted.")
+
+
+def reveal_secret(token: str) -> str:
+    """
+    Strict decryption for the authorized reveal path: unlike `decrypt_secret`
+    it never degrades silently — it raises EncryptionNotConfiguredError when no
+    (valid) key is configured and SecretDecryptionError when the token is
+    invalid, tampered with, or was encrypted with a key that is no longer
+    configured. Neither message contains the token or any value.
+    """
+    cipher = _build_cipher(settings.renova_encryption_key)
+    if cipher is None:
+        raise EncryptionNotConfiguredError()
+    try:
+        return cipher.decrypt(token.encode("ascii")).decode("utf-8")
+    except (InvalidToken, ValueError):
+        raise SecretDecryptionError() from None
+
+
 def mask_secret(plaintext: str | None) -> str:
     """
-    "••••1234" — the last four characters only, and nothing at all when the
-    value is 4 characters or shorter (revealing a whole short value defeats
-    the point). `None` (couldn't decrypt) masks to a bare "••••".
+    "•••••••4821" — bullets for everything but the last four characters, and
+    only bullets ("••••") when the value is 4 characters or shorter (revealing
+    a whole short value defeats the point). `None` (couldn't decrypt) masks to
+    a bare "••••".
     """
     if not plaintext or len(plaintext) <= 4:
         return "••••"
-    return "••••" + plaintext[-4:]
+    return "•" * (len(plaintext) - 4) + plaintext[-4:]
 
 
 def mask_encrypted(token: str | None) -> str | None:

@@ -6,7 +6,13 @@ from typing import Any
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.core.crypto import EncryptionNotConfiguredError, encrypt_secret, mask_encrypted
+from app.core.crypto import (
+    EncryptionNotConfiguredError,
+    SecretDecryptionError,
+    encrypt_secret,
+    mask_encrypted,
+    reveal_secret,
+)
 from app.models.renova_case import RenovaCase
 from app.repositories.organization_repo import UserRepository
 from app.repositories.renova_case_repo import RenovaCaseRepository
@@ -16,7 +22,9 @@ from app.schemas.renova_case import (
     RenovaCaseListItem,
     RenovaCaseRead,
     RenovaCaseUpdate,
+    RenovaSensitiveData,
 )
+from app.schemas.user import CurrentUser
 from app.services.audit_service import AuditService
 
 _ENTITY_TYPE = "renova_case"
@@ -24,6 +32,11 @@ _ENTITY_TYPE = "renova_case"
 # Write-only inputs that map to encrypted columns. They are handled
 # separately from every other field and never enter an audit snapshot.
 _SENSITIVE_INPUTS = {"nss": "nss_encrypted", "credit_number": "credit_number_encrypted"}
+
+# Who may see the FULL protected values: organization owners and admins, and
+# the advisor the case is assigned to. Any other member of the organization
+# can work the case but only ever sees the masks.
+_REVEAL_ROLES = ("owner", "admin")
 
 
 class RenovaCaseService:
@@ -74,6 +87,44 @@ class RenovaCaseService:
 
     def get(self, organization_id: uuid.UUID, case_id: uuid.UUID) -> RenovaCaseRead:
         return self.to_read(self.get_or_404(organization_id, case_id))
+
+    def reveal_sensitive_data(self, current_user: CurrentUser, case_id: uuid.UUID) -> RenovaSensitiveData:
+        """
+        The only path that returns the full NSS / credit number. Order matters:
+        the case is resolved inside the caller's own organization first (404
+        for anything else, so ids of other organizations can't be probed), then
+        authorization, and only then is anything decrypted. Each successful
+        reveal is audited — who, which case, when — never the values, not even
+        their last four characters.
+        """
+        case = self.get_or_404(current_user.organization_id, case_id)
+        if current_user.role not in _REVEAL_ROLES and case.assigned_user_id != current_user.id:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN, "You are not allowed to view this case's protected data."
+            )
+        try:
+            data = RenovaSensitiveData(
+                nss=reveal_secret(case.nss_encrypted) if case.nss_encrypted else None,
+                credit_number=reveal_secret(case.credit_number_encrypted) if case.credit_number_encrypted else None,
+            )
+        except EncryptionNotConfiguredError:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE, "Sensitive-field encryption is not configured."
+            ) from None
+        except SecretDecryptionError:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "The stored protected data can't be decrypted with the configured key.",
+            ) from None
+        self.audit.record(
+            organization_id=current_user.organization_id,
+            actor_user_id=current_user.id,
+            entity_type=_ENTITY_TYPE,
+            entity_id=case.id,
+            action="RENOVA_SENSITIVE_DATA_VIEWED",
+        )
+        self.db.commit()
+        return data
 
     # --- writes ------------------------------------------------------------
 
@@ -150,6 +201,8 @@ class RenovaCaseService:
             update={
                 "nss_masked": mask_encrypted(case.nss_encrypted),
                 "credit_number_masked": mask_encrypted(case.credit_number_encrypted),
+                "has_nss": case.nss_encrypted is not None,
+                "has_credit_number": case.credit_number_encrypted is not None,
             }
         )
 
@@ -215,6 +268,10 @@ class RenovaCaseService:
         # One general row for any edit, plus a specific row for each of the
         # changes the product wants to be able to find on their own.
         record("RENOVA_CASE_UPDATED", {"sensitive_fields_changed": sensitive_changed} if sensitive_changed else None)
+        if sensitive_changed:
+            # A dedicated row so replacing / removing protected data is easy to
+            # find — field NAMES only, never the old or the new value.
+            record("RENOVA_SENSITIVE_DATA_CHANGED", {"sensitive_fields_changed": sensitive_changed})
         if "status" in changed:
             record("RENOVA_CASE_STATUS_CHANGED")
         if "assigned_user_id" in changed:

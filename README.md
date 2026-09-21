@@ -190,6 +190,15 @@ This is deliberately **not a workflow/state-transition engine** — any stage va
 
 Derived, not stored: a contact is *active* when it has an open Opportunity (stage not `won`/`lost`) **or** a Buyer Requirement whose status is not `cancelled`/`fulfilled`, evaluated with two `EXISTS` subqueries in the same SELECT (`active_contact_condition` in `app/repositories/contact_repo.py`). `active=false` returns the complement; omitting it returns every contact as before. Owning an active Property is not a criterion because the data model has no Property→Contact owner link.
 
+### Renova protected data (NSS and número de crédito)
+
+- **Storage**: identifiers, not numbers — kept as strings so leading zeros survive. They are normalized to bare digits (spaces/hyphens allowed while typing; NSS = exactly 11 digits, credit number = 6–20 digits), then encrypted with Fernet (`cryptography`) using `RENOVA_ENCRYPTION_KEY` before they touch the database. Only ciphertext (`nss_encrypted`, `credit_number_encrypted`) is stored; there is no plaintext fallback.
+- **Key**: generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` and put it in the git-ignored `backend/.env`; in production set the same variable in the hosting's secrets manager. Losing the key makes stored values unrecoverable, and changing it arbitrarily has the same effect (rotate by listing several comma-separated keys, newest first). Restart the backend after changing `.env`. Without a key, saving either value returns a controlled `503` and nothing is stored.
+- **Reads**: listings carry nothing sensitive; the detail returns only `nss_masked` / `credit_number_masked` (`•••••••4821`) plus `has_nss` / `has_credit_number`.
+- **Reveal**: `GET /renova/cases/{id}/sensitive-data` returns the full values for organization owners/admins and the assigned advisor only (other members get `403`, other organizations `404`), with `Cache-Control: no-store`. Each successful reveal is audited as `RENOVA_SENSITIVE_DATA_VIEWED` (actor, case, time — never a value). Replacing or removing a value is audited as `RENOVA_SENSITIVE_DATA_CHANGED` (field names only).
+- **Edit**: `PATCH` leaves stored ciphertext untouched unless `nss` / `credit_number` is sent; a new value replaces it, an explicit `null` removes it, and a masked or non-digit value is rejected with `422`.
+
+
 ## Demo data
 
 `scripts/seed_demo_data.py` populates 20 fictional contacts spanning both ways a person enters the CRM (10 interested in a specific property, 10 with a buyer requirement — including the Property-Interest→not-interested→Buyer-Requirement transition case and a contact whose requirement changed over time), plus ~14 supporting properties and a chronological Activity timeline (2-5 entries) for every contact, under one dedicated **"State AI Demo Organization"**.
