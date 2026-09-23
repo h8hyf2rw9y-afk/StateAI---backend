@@ -344,3 +344,13 @@ class RenovaSensitiveData(BaseModel):
         return "RenovaSensitiveData(nss=<hidden>, credit_number=<hidden>)"
 
     __str__ = __repr__
+
+
+class RenovaIneImage(BaseModel):
+    # A JPEG/PNG/WebP data URL. The service validates decoded bytes and size.
+    image: str
+
+    def __repr__(self) -> str:
+        return "RenovaIneImage(image=<hidden>)"
+
+    __str__ = __repr__

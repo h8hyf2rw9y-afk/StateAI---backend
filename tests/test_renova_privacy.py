@@ -10,6 +10,7 @@ The values below are obviously fake test strings, not realistic identifiers.
 """
 
 import importlib.util
+import base64
 import io
 import json
 import logging
@@ -82,6 +83,24 @@ def test_sensitive_fields_are_stored_as_ciphertext_only(
         "nss_encrypted",
         "credit_number_encrypted",
     }
+
+
+def test_ine_images_are_encrypted_and_only_revealed_via_protected_endpoint(
+    client: TestClient, current_user: CurrentUser, db_session: Session
+):
+    case = _create_with_secrets(client, current_user)
+    image = "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"fake-image-content").decode()
+    path = f"{URL}/{case['id']}/ine/front"
+    assert client.put(path, json={"image": image}).status_code == 204
+    row = db_session.get(RenovaCase, uuid.UUID(case["id"]))
+    assert row.ine_front_encrypted and image not in row.ine_front_encrypted
+    assert image not in client.get(f"{URL}/{case['id']}").text
+    assert image not in client.get(URL).text
+    revealed = client.get(path)
+    assert revealed.status_code == 200
+    assert revealed.json() == {"image": image}
+    assert revealed.headers["Cache-Control"] == "no-store"
+    assert client.put(path, json={"image": "data:image/png;base64,bogus"}).status_code == 422
 
 
 def test_no_plaintext_anywhere_in_the_row(client: TestClient, current_user: CurrentUser, db_session: Session):
@@ -366,6 +385,7 @@ def _load_migration(filename: str = "a7c3e91d5b20_add_renova_cases.py"):
 
 
 ADDRESS_MIGRATION = "b81f4c2e7a63_add_renova_address_and_occupancy.py"
+INE_MIGRATION = "f12a89d7e430_add_renova_ine_images.py"
 
 
 def _render(module, direction: str) -> str:
@@ -410,7 +430,8 @@ def test_address_migration_chains_and_only_adds_nullable_columns_to_renova():
 
 
 def test_migrations_together_match_the_model():
-    sql = _render_upgrade_sql() + _render(_load_migration(ADDRESS_MIGRATION), "upgrade")
+    sql = (_render_upgrade_sql() + _render(_load_migration(ADDRESS_MIGRATION), "upgrade")
+           + _render(_load_migration(INE_MIGRATION), "upgrade"))
     table = RenovaCase.__table__
 
     for column in table.columns:
