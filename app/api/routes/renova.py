@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -12,6 +12,7 @@ from app.schemas.renova_case import (
     RenovaCaseRead,
     RenovaCaseUpdate,
     RenovaSensitiveData,
+    RenovaIneImage,
 )
 from app.schemas.user import CurrentUser
 from app.services.renova_case_service import RenovaCaseService
@@ -77,6 +78,28 @@ def reveal_renova_sensitive_data(
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
     return data
+
+
+@router.get("/{case_id}/ine/{side}", response_model=RenovaIneImage)
+def get_renova_ine(case_id: uuid.UUID, side: str, response: Response,
+                   current_user: CurrentUser = Depends(get_current_org_user), db: Session = Depends(get_db)) -> RenovaIneImage:
+    if side not in ("front", "back"):
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    image = RenovaCaseService(db).get_ine_image(current_user, case_id, side)
+    if image is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "INE image not found.")
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return RenovaIneImage(image=image)
+
+
+@router.put("/{case_id}/ine/{side}", status_code=status.HTTP_204_NO_CONTENT)
+def put_renova_ine(case_id: uuid.UUID, side: str, data: RenovaIneImage,
+                   current_user: CurrentUser = Depends(get_current_org_user), db: Session = Depends(get_db)) -> Response:
+    if side not in ("front", "back"):
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    RenovaCaseService(db).save_ine_image(current_user, case_id, side, data.image)
+    return Response(status_code=status.HTTP_204_NO_CONTENT, headers={"Cache-Control": "no-store"})
 
 
 @router.patch("/{case_id}", response_model=RenovaCaseRead)

@@ -79,6 +79,8 @@ class RenovaCase(Base, UUIDPKMixin, TimestampMixin):
     # SENSITIVE — ciphertext only. See the class docstring.
     nss_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     credit_number_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ine_front_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ine_back_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # --- Ubicación --------------------------------------------------------
     # Plain columns on the case (a Renova property is not an inventory

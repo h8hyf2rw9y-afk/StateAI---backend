@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import uuid
+import base64
+import binascii
+import re
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -37,6 +40,9 @@ _SENSITIVE_INPUTS = {"nss": "nss_encrypted", "credit_number": "credit_number_enc
 # the advisor the case is assigned to. Any other member of the organization
 # can work the case but only ever sees the masks.
 _REVEAL_ROLES = ("owner", "admin")
+_INE_COLUMNS = {"front": "ine_front_encrypted", "back": "ine_back_encrypted"}
+_INE_DATA_URL = re.compile(r"^data:image/(jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$")
+_MAX_INE_BYTES = 2 * 1024 * 1024
 
 
 class RenovaCaseService:
@@ -125,6 +131,47 @@ class RenovaCaseService:
         )
         self.db.commit()
         return data
+
+    def _protected_case(self, current_user: CurrentUser, case_id: uuid.UUID) -> RenovaCase:
+        case = self.get_or_404(current_user.organization_id, case_id)
+        if current_user.role not in _REVEAL_ROLES and case.assigned_user_id != current_user.id:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "You are not allowed to view this case's protected data.")
+        return case
+
+    def get_ine_image(self, current_user: CurrentUser, case_id: uuid.UUID, side: str) -> str | None:
+        case = self._protected_case(current_user, case_id)
+        token = getattr(case, _INE_COLUMNS[side])
+        try:
+            image = reveal_secret(token) if token else None
+        except EncryptionNotConfiguredError:
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Sensitive-field encryption is not configured.") from None
+        except SecretDecryptionError:
+            raise HTTPException(status.HTTP_409_CONFLICT, "The stored protected data can't be decrypted with the configured key.") from None
+        self.audit.record(organization_id=current_user.organization_id, actor_user_id=current_user.id,
+                          entity_type=_ENTITY_TYPE, entity_id=case.id, action="RENOVA_INE_VIEWED")
+        self.db.commit()
+        return image
+
+    def save_ine_image(self, current_user: CurrentUser, case_id: uuid.UUID, side: str, image: str) -> None:
+        case = self._protected_case(current_user, case_id)
+        match = _INE_DATA_URL.fullmatch(image)
+        if not match or len(image) > 3_000_000:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Use a JPEG, PNG or WebP image smaller than 2 MB.")
+        try:
+            raw = base64.b64decode(match.group(2), validate=True)
+        except binascii.Error:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid image.") from None
+        signatures = {"jpeg": raw.startswith(b"\xff\xd8\xff"), "png": raw.startswith(b"\x89PNG\r\n\x1a\n"),
+                      "webp": raw.startswith(b"RIFF") and raw[8:12] == b"WEBP"}
+        if not raw or len(raw) > _MAX_INE_BYTES or not signatures[match.group(1)]:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Use a JPEG, PNG or WebP image smaller than 2 MB.")
+        try:
+            setattr(case, _INE_COLUMNS[side], encrypt_secret(image))
+        except EncryptionNotConfiguredError:
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Sensitive-field encryption is not configured.") from None
+        self.audit.record(organization_id=current_user.organization_id, actor_user_id=current_user.id,
+                          entity_type=_ENTITY_TYPE, entity_id=case.id, action="RENOVA_INE_UPDATED")
+        self.db.commit()
 
     # --- writes ------------------------------------------------------------
 
