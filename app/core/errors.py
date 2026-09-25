@@ -47,6 +47,7 @@ _STATUS_CODE_NAMES: dict[int, str] = {
     status.HTTP_403_FORBIDDEN: "FORBIDDEN",
     status.HTTP_404_NOT_FOUND: "NOT_FOUND",
     status.HTTP_409_CONFLICT: "CONFLICT",
+    status.HTTP_429_TOO_MANY_REQUESTS: "RATE_LIMITED",
     status.HTTP_422_UNPROCESSABLE_ENTITY: "VALIDATION_ERROR",
     status.HTTP_502_BAD_GATEWAY: "BAD_GATEWAY",
     status.HTTP_503_SERVICE_UNAVAILABLE: "SERVICE_UNAVAILABLE",
@@ -88,7 +89,18 @@ def register_exception_handlers(app: FastAPI) -> None:
         """Every existing `raise HTTPException(...)` across this codebase (404/403/422/502/503/504/...) lands here — same status code as before, now in the shared envelope."""
         request_id = _request_id(request)
         code = _STATUS_CODE_NAMES.get(exc.status_code, "ERROR")
-        return _error_response(exc.status_code, code, str(exc.detail), request_id)
+        message = str(exc.detail)
+        extras: dict = {}
+        if isinstance(exc.detail, dict):
+            code = str(exc.detail.get("code", code))
+            message = str(exc.detail.get("message", "Request failed."))
+            extras = {key: value for key, value in exc.detail.items() if key not in {"code", "message"}}
+        response = JSONResponse(
+            status_code=exc.status_code,
+            content={"error": {"code": code, "message": message, "request_id": request_id, **extras}},
+            headers={**(exc.headers or {}), REQUEST_ID_HEADER: request_id},
+        )
+        return response
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:

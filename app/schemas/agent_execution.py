@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -22,6 +23,7 @@ class AgentExecutionRead(ORMModel):
     provider: str
     model: str
     duration_ms: int | None
+    completed_at: datetime | None
     human_action: str | None
     human_action_at: datetime | None
     created_at: datetime
@@ -47,3 +49,11 @@ class AgentExecutionHumanActionUpdate(BaseModel):
     """The only client-writable slice of an AgentExecution — records whether an advisor acted on or dismissed the recommendation. Sets human_action_at server-side."""
 
     human_action: HumanActionStatus
+
+
+class AgentRunInProgress(BaseModel):
+    """Returned with HTTP 202 when another request already owns the LLM call."""
+
+    status: Literal["queued", "running"]
+    execution_id: uuid.UUID
+    retry_after_seconds: int = 2

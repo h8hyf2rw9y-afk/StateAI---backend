@@ -2,7 +2,8 @@ import time
 import uuid
 from typing import cast
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.ai.gateway import AIGateway
@@ -17,6 +18,7 @@ from app.schemas.follow_up import FollowUpResult
 from app.schemas.lead_context import LeadContext
 from app.schemas.lead_intelligence import LeadIntelligenceResult
 from app.schemas.pipeline import PipelineResult
+from app.schemas.agent_execution import AgentRunInProgress
 from app.schemas.user import CurrentUser
 from app.services.agent_execution_service import AgentExecutionService
 from app.services.lead_context_service import LeadContextService
@@ -59,7 +61,14 @@ def read_lead_context(
     )
 
 
-def _run_and_record(agent_id: str, current_user: CurrentUser, contact_id: uuid.UUID, db: Session, llm: LLMProvider):
+def _run_and_record(
+    agent_id: str,
+    current_user: CurrentUser,
+    contact_id: uuid.UUID,
+    db: Session,
+    llm: LLMProvider,
+    idempotency_key: str | None,
+):
     """
     Shared by both agent routes below: runs the Gateway, then persists an
     AgentExecution either way (see app/models/agent_execution.py) — one
@@ -75,19 +84,33 @@ def _run_and_record(agent_id: str, current_user: CurrentUser, contact_id: uuid.U
     isn't an AI execution outcome).
     """
     descriptor = get_agent(agent_id)
+    service = AgentExecutionService(db)
+    reservation = service.begin(
+        organization_id=current_user.organization_id,
+        agent_name=agent_id,
+        agent_version=descriptor.version,
+        contact_id=contact_id,
+        user_id=current_user.id,
+        provider=llm.provider_name,
+        model=llm.model_name,
+        idempotency_key=idempotency_key,
+    )
+    if reservation.kind == "replayed":
+        return reservation.execution.output
+    if reservation.kind == "in_progress":
+        pending = AgentRunInProgress(
+            status=reservation.execution.status,
+            execution_id=reservation.execution.id,
+        )
+        return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=pending.model_dump(mode="json"))
+
     started = time.monotonic()
     try:
         execution = AIGateway(db, llm).run(agent_id, current_user, contact_id)
     except (LLMTimeoutError, LLMInvalidOutputError, LLMProviderError) as exc:
         duration_ms = int((time.monotonic() - started) * 1000)
-        AgentExecutionService(db).record_failure(
-            organization_id=current_user.organization_id,
-            agent_name=agent_id,
-            agent_version=descriptor.version,
-            contact_id=contact_id,
-            user_id=current_user.id,
-            provider=llm.provider_name,
-            model=llm.model_name,
+        service.complete_failure(
+            execution=reservation.execution,
             duration_ms=duration_ms,
             error=exc,
         )
@@ -98,6 +121,10 @@ def _run_and_record(agent_id: str, current_user: CurrentUser, contact_id: uuid.U
                 status.HTTP_502_BAD_GATEWAY, "The AI analysis service returned an unexpected response."
             ) from exc
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "The AI analysis service is currently unavailable.") from exc
+    except Exception as exc:
+        duration_ms = int((time.monotonic() - started) * 1000)
+        service.complete_failure(execution=reservation.execution, duration_ms=duration_ms, error=exc)
+        raise
 
     # Computed after a successful run (not before) so it reflects the data
     # the agent actually just reasoned over. Never raised as a hard failure
@@ -107,19 +134,11 @@ def _run_and_record(agent_id: str, current_user: CurrentUser, contact_id: uuid.U
     # which also tolerates a missing fingerprint the same way).
     try:
         context_fingerprint = LeadContextService(db).compute_context_fingerprint(current_user.organization_id, contact_id)
-    except HTTPException:
-        raise
     except Exception:
         context_fingerprint = None
 
-    AgentExecutionService(db).record_success(
-        organization_id=current_user.organization_id,
-        agent_name=agent_id,
-        agent_version=execution.metadata.agent_version,
-        contact_id=contact_id,
-        user_id=current_user.id,
-        provider=execution.metadata.provider,
-        model=execution.metadata.model,
+    service.complete_success(
+        execution=reservation.execution,
         duration_ms=execution.metadata.duration_ms,
         result=execution.result,
         context_fingerprint=context_fingerprint,
@@ -127,13 +146,14 @@ def _run_and_record(agent_id: str, current_user: CurrentUser, contact_id: uuid.U
     return execution.result
 
 
-@router.post("/lead-intelligence/{contact_id}", response_model=LeadIntelligenceResult)
+@router.post("/lead-intelligence/{contact_id}", response_model=LeadIntelligenceResult | AgentRunInProgress)
 def analyze_lead(
     contact_id: uuid.UUID,
     current_user: CurrentUser = Depends(get_current_org_user),
     db: Session = Depends(get_db),
     llm: LLMProvider = Depends(_get_llm_provider),
-) -> LeadIntelligenceResult:
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", min_length=8, max_length=128),
+) -> LeadIntelligenceResult | AgentRunInProgress:
     """
     Runs the Lead Intelligence Agent through the AI Gateway
     (app/ai/gateway.py) for one contact: builds its LeadContext, asks the
@@ -142,16 +162,20 @@ def analyze_lead(
     the lead. Every run (success or failure) is persisted as an
     AgentExecution — see _run_and_record above and app/models/agent_execution.py.
     """
-    return cast(LeadIntelligenceResult, _run_and_record("lead_intelligence", current_user, contact_id, db, llm))
+    return cast(
+        LeadIntelligenceResult,
+        _run_and_record("lead_intelligence", current_user, contact_id, db, llm, idempotency_key),
+    )
 
 
-@router.post("/follow-up/{contact_id}", response_model=FollowUpResult)
+@router.post("/follow-up/{contact_id}", response_model=FollowUpResult | AgentRunInProgress)
 def recommend_follow_up(
     contact_id: uuid.UUID,
     current_user: CurrentUser = Depends(get_current_org_user),
     db: Session = Depends(get_db),
     llm: LLMProvider = Depends(_get_llm_provider),
-) -> FollowUpResult:
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", min_length=8, max_length=128),
+) -> FollowUpResult | AgentRunInProgress:
     """
     Runs the Follow-up Agent through the AI Gateway (app/ai/gateway.py) for
     one contact: builds its LeadContext, asks the configured LLM whether
@@ -162,16 +186,17 @@ def recommend_follow_up(
     run (success or failure) is persisted as an AgentExecution — see
     _run_and_record above.
     """
-    return cast(FollowUpResult, _run_and_record("follow_up", current_user, contact_id, db, llm))
+    return cast(FollowUpResult, _run_and_record("follow_up", current_user, contact_id, db, llm, idempotency_key))
 
 
-@router.post("/pipeline/{contact_id}", response_model=PipelineResult)
+@router.post("/pipeline/{contact_id}", response_model=PipelineResult | AgentRunInProgress)
 def analyze_pipeline(
     contact_id: uuid.UUID,
     current_user: CurrentUser = Depends(get_current_org_user),
     db: Session = Depends(get_db),
     llm: LLMProvider = Depends(_get_llm_provider),
-) -> PipelineResult:
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", min_length=8, max_length=128),
+) -> PipelineResult | AgentRunInProgress:
     """
     Runs the Pipeline Agent through the AI Gateway (app/ai/gateway.py) for
     one contact: builds its LeadContext, asks the configured LLM to analyze
@@ -183,4 +208,4 @@ def analyze_pipeline(
     (success or failure) is persisted as an AgentExecution — see
     _run_and_record above.
     """
-    return cast(PipelineResult, _run_and_record("pipeline", current_user, contact_id, db, llm))
+    return cast(PipelineResult, _run_and_record("pipeline", current_user, contact_id, db, llm, idempotency_key))

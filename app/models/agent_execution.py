@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -58,11 +58,17 @@ class AgentExecution(Base, UUIDPKMixin, CreatedAtMixin):
     # instead — always populated, never NULL, so "what happened" is always answerable.
     output: Mapped[dict] = mapped_column(_JSONVariant, nullable=False)
 
-    # Soft enum: succeeded | failed.
+    # Soft enum: running | succeeded | failed. A row is created before the
+    # provider call so concurrent requests can share one in-flight run.
     status: Mapped[str] = mapped_column(nullable=False)
     provider: Mapped[str] = mapped_column(nullable=False)  # LLMProvider.provider_name, e.g. "ollama"/"anthropic"/"fake"
     model: Mapped[str] = mapped_column(nullable=False)  # LLMProvider.model_name
     duration_ms: Mapped[int | None] = mapped_column(nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Supplied by the caller for safe HTTP retries. It is deliberately
+    # nullable for historical rows and clients that have not adopted it yet.
+    idempotency_key: Mapped[str | None] = mapped_column(nullable=True)
 
     # Soft enum: acted_on | dismissed. NULL means no human has recorded a
     # reaction yet. Set via PATCH /ai/agent-executions/{id} — see
@@ -75,4 +81,21 @@ class AgentExecution(Base, UUIDPKMixin, CreatedAtMixin):
         Index("ix_agent_executions_contact_id", "contact_id"),
         Index("ix_agent_executions_org_agent", "organization_id", "agent_name"),
         Index("ix_agent_executions_org_created_at", "organization_id", "created_at"),
+        Index(
+            "uq_agent_executions_active",
+            "organization_id",
+            "contact_id",
+            "agent_name",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"),
+            sqlite_where=text("status IN ('queued', 'running')"),
+        ),
+        Index(
+            "uq_agent_executions_org_idempotency_key",
+            "organization_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+            sqlite_where=text("idempotency_key IS NOT NULL"),
+        ),
     )
