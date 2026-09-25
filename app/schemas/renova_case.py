@@ -71,7 +71,17 @@ _OPTIONAL_TEXT_FIELDS = (
 
 # Columns that are NOT NULL in the database: a PATCH may change them but must
 # never explicitly null them.
-_REQUIRED_COLUMNS = ("owner_name", "owner_phone", "entry_date", "assigned_user_id", "source", "status", "has_deeds", "currency")
+_REQUIRED_COLUMNS = (
+    "owner_name",
+    "owner_phone",
+    "entry_date",
+    "assigned_user_id",
+    "source",
+    "status",
+    "has_deeds",
+    "currency",
+    "is_duplex",
+)
 
 DEBT_FIELDS = ("property_tax_debt", "other_debt", "water_debt", "electricity_debt", "gas_debt")
 FINANCIAL_FIELDS = (
@@ -168,6 +178,7 @@ class RenovaCaseBase(_BlankToNoneMixin):
     postal_code: PostalCode | None = None
     # Inmueble
     dwelling_type: RenovaDwellingType | None = None
+    is_duplex: bool = False
     occupancy_status: RenovaOccupancyStatus | None = None
     floors: int | None = Field(default=None, ge=0, le=100)
     bathrooms: Decimal | None = Field(default=None, ge=0, le=99, max_digits=3, decimal_places=1)
@@ -227,6 +238,7 @@ class RenovaCaseUpdate(_SecretFormatMixin, _BlankToNoneMixin):
     municipality: ShortText | None = None
     postal_code: PostalCode | None = None
     dwelling_type: RenovaDwellingType | None = None
+    is_duplex: bool | None = None
     occupancy_status: RenovaOccupancyStatus | None = None
     floors: int | None = Field(default=None, ge=0, le=100)
     bathrooms: Decimal | None = Field(default=None, ge=0, le=99, max_digits=3, decimal_places=1)
@@ -269,6 +281,7 @@ class _RenovaCaseFields(ORMModel):
     owner_name: str
     owner_phone: str
     dwelling_type: str | None
+    is_duplex: bool
     currency: str
     final_offer: Decimal | None
     market_value: Decimal | None

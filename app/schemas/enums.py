@@ -428,8 +428,13 @@ RenovaMaritalStatus = Literal[
     "single", "married_conjugal_partnership", "married_separate_property", "divorced", "widowed", "common_law", "unknown",
 ]
 
-RENOVA_DWELLING_TYPES: tuple[str, ...] = ("house", "apartment", "duplex")
-RenovaDwellingType = Literal["house", "apartment", "duplex"]
+# Mutually exclusive BASE dwelling type. "Duplex" is deliberately NOT a
+# member here — it is a configuration a house or an apartment can additionally
+# have (RenovaCase.is_duplex), not a third base type. A case can therefore be
+# a "Casa dúplex" or "Departamento dúplex", which a flat 3-way enum could
+# never represent (see migration b2f7a4c9d310).
+RENOVA_DWELLING_TYPES: tuple[str, ...] = ("house", "apartment")
+RenovaDwellingType = Literal["house", "apartment"]
 
 # Three-valued on purpose: "we haven't asked yet" is not the same as "no".
 RENOVA_DEEDS_STATUSES: tuple[str, ...] = ("yes", "no", "unknown")

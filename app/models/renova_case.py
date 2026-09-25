@@ -92,8 +92,16 @@ class RenovaCase(Base, UUIDPKMixin, TimestampMixin):
     postal_code: Mapped[str | None] = mapped_column(nullable=True)  # 5-digit Mexican CP
 
     # --- Inmueble ---------------------------------------------------------
-    # Soft enums: dwelling_type, occupancy_status ("Situación actual"), has_deeds.
+    # Soft enums: dwelling_type (base type — "house"/"apartment" only),
+    # occupancy_status ("Situación actual"), has_deeds. `is_duplex` is a
+    # separate boolean CONFIGURATION, not a third dwelling_type value: a
+    # duplex is still fundamentally a house or an apartment, so "Casa" +
+    # is_duplex=True and "Departamento" + is_duplex=True are both valid and
+    # distinct from a plain "Casa"/"Departamento" (see migration
+    # b2f7a4c9d310, which also carries forward any case previously saved with
+    # the old dwelling_type="duplex" value).
     dwelling_type: Mapped[str | None] = mapped_column(nullable=True)
+    is_duplex: Mapped[bool] = mapped_column(nullable=False, default=False, server_default="false")
     occupancy_status: Mapped[str | None] = mapped_column(nullable=True)
     floors: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     bathrooms: Mapped[Decimal | None] = mapped_column(Numeric(3, 1), nullable=True)  # half-baths are common
