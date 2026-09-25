@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Sequence
 
 from sqlalchemy import or_, select
 
@@ -44,4 +45,18 @@ class RenovaCaseRepository(OrgScopedRepository[RenovaCase]):
             )
         # Newest intake first; created_at breaks ties between cases logged the same day.
         stmt = stmt.order_by(RenovaCase.entry_date.desc(), RenovaCase.created_at.desc()).limit(limit).offset(offset)
+        return list(self.db.execute(stmt).scalars().all())
+
+    def list_for_pipeline(self, organization_id: uuid.UUID, statuses: Sequence[str]) -> list[RenovaCase]:
+        """
+        Every case in one of `statuses` for the board — deliberately
+        unpaginated: the Kanban board must never silently hide a case behind
+        a page boundary, and an organization's active Renova pipeline is
+        realistically small.
+        """
+        stmt = (
+            select(RenovaCase)
+            .where(RenovaCase.organization_id == organization_id, RenovaCase.status.in_(statuses))
+            .order_by(RenovaCase.entry_date.desc(), RenovaCase.created_at.desc())
+        )
         return list(self.db.execute(stmt).scalars().all())

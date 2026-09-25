@@ -379,6 +379,44 @@ class RenovaCaseRead(_RenovaCaseFields):
     has_credit_number: bool = False
 
 
+class RenovaPipelineCase(ORMModel):
+    """
+    One card on the Renova Kanban board (GET /renova/pipeline) — as lean as
+    RenovaCaseListItem, and for the same reason: never NSS, credit number,
+    INE images or any ciphertext, not even masked. Field names are exactly
+    the model's own (final_offer, other_debt, property_tax_debt_unit, …) —
+    no renamed aliases.
+    """
+
+    id: uuid.UUID
+    owner_name: str
+    owner_phone: str
+    status: str
+    assigned_user_id: uuid.UUID | None
+    dwelling_type: str | None
+    is_duplex: bool
+    final_offer: Decimal | None
+    market_value: Decimal | None
+    other_debt: Decimal | None
+    property_tax_debt: Decimal | None
+    property_tax_debt_unit: str
+    owner_expected_amount: Decimal | None
+    updated_at: datetime
+
+
+class RenovaPipelineStage(BaseModel):
+    """One Kanban column: a status from RENOVA_PIPELINE_STAGES and its cards, in that stage's order."""
+
+    status: str
+    cases: list[RenovaPipelineCase]
+
+
+class RenovaPipelineResponse(BaseModel):
+    """Every active-flow case, already grouped by stage in board order — one request, no client-side pagination gaps."""
+
+    stages: list[RenovaPipelineStage]
+
+
 class RenovaSensitiveData(BaseModel):
     """
     The ONLY schema that carries the full NSS / credit number. Returned solely

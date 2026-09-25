@@ -19,12 +19,16 @@ from app.core.crypto import (
 from app.models.renova_case import RenovaCase
 from app.repositories.organization_repo import UserRepository
 from app.repositories.renova_case_repo import RenovaCaseRepository
+from app.schemas.enums import RENOVA_PIPELINE_STAGES
 from app.schemas.renova_case import (
     FINANCIAL_FIELDS,
     RenovaCaseCreate,
     RenovaCaseListItem,
     RenovaCaseRead,
     RenovaCaseUpdate,
+    RenovaPipelineCase,
+    RenovaPipelineResponse,
+    RenovaPipelineStage,
     RenovaSensitiveData,
 )
 from app.schemas.user import CurrentUser
@@ -84,6 +88,25 @@ class RenovaCaseService:
             organization_id, q=q, status=status_, assigned_user_id=assigned_user_id, limit=limit, offset=offset
         )
         return [RenovaCaseListItem.model_validate(c) for c in cases]
+
+    def pipeline(self, organization_id: uuid.UUID) -> RenovaPipelineResponse:
+        """
+        The Renova Kanban board: every case actively moving through the
+        purchase flow (RENOVA_PIPELINE_STAGES), grouped by stage in board
+        order — one query, no pagination gap. "draft", "reviewing",
+        "rejected" and "cancelled" cases are real and kept, just never on
+        this board (see RENOVA_PIPELINE_STAGES's docstring).
+        """
+        cases = self.repo.list_for_pipeline(organization_id, RENOVA_PIPELINE_STAGES)
+        by_status: dict[str, list[RenovaCase]] = {stage: [] for stage in RENOVA_PIPELINE_STAGES}
+        for case in cases:
+            by_status[case.status].append(case)
+        return RenovaPipelineResponse(
+            stages=[
+                RenovaPipelineStage(status=stage, cases=[RenovaPipelineCase.model_validate(c) for c in by_status[stage]])
+                for stage in RENOVA_PIPELINE_STAGES
+            ]
+        )
 
     def get_or_404(self, organization_id: uuid.UUID, case_id: uuid.UUID) -> RenovaCase:
         case = self.repo.get(organization_id, case_id)

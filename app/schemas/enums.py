@@ -408,6 +408,23 @@ RenovaCaseStatus = Literal[
     "cancelled",
 ]
 
+# The Renova Kanban board (GET /renova/pipeline) shows exactly these six
+# columns, in this order — a purchase-flow SUBSET of RENOVA_CASE_STATUSES.
+# "draft" (not yet a real prospect), "reviewing" (an earlier, separate review
+# step some cases still use) and the two exits "rejected"/"cancelled" are
+# real, still-supported statuses — a case in any of them keeps its full
+# history and can be reassigned from its detail page — but none of the four
+# are a pipeline column: the board itself only ever shows a case that is
+# actively moving through the purchase flow.
+RENOVA_PIPELINE_STAGES: tuple[str, ...] = (
+    "new",
+    "offer_preparation",
+    "offer_sent",
+    "negotiating",
+    "accepted",
+    "purchased",
+)
+
 # Initially only WhatsApp is how cases arrive; the other values exist so
 # adding a channel later is a one-line change here (soft enum, no migration).
 RENOVA_SOURCES: tuple[str, ...] = ("whatsapp", "phone", "referral", "website", "other")
