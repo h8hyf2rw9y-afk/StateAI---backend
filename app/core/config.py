@@ -85,6 +85,13 @@ class Settings(BaseSettings):
     # application code.
     anthropic_model: str = "claude-sonnet-5"
 
+    # AI execution safety. Zero disables an individual guard, which is
+    # useful for controlled development/tests without changing code.
+    ai_agent_cooldown_seconds: int = 60
+    ai_user_rate_limit_per_minute: int = 5
+    ai_organization_rate_limit_per_minute: int = 30
+    ai_contact_agent_rate_limit_per_hour: int = 10
+
     @property
     def jwks_url(self) -> str:
         return f"{self.supabase_url.rstrip('/')}/auth/v1/.well-known/jwks.json"

@@ -8,6 +8,10 @@ import os
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 os.environ.setdefault("SUPABASE_URL", "https://test-project.supabase.co")
+os.environ.setdefault("AI_AGENT_COOLDOWN_SECONDS", "0")
+os.environ.setdefault("AI_USER_RATE_LIMIT_PER_MINUTE", "1000")
+os.environ.setdefault("AI_ORGANIZATION_RATE_LIMIT_PER_MINUTE", "1000")
+os.environ.setdefault("AI_CONTACT_AGENT_RATE_LIMIT_PER_HOUR", "1000")
 
 # A throwaway Fernet key so Renova's NSS/credit-number encryption works in
 # tests without any real secret (see app/core/crypto.py). Generated fresh per
