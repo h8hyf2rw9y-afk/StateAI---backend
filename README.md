@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 33562)
-Total output lines: 843
-
 # StateAI — Backend
 
 StateAI (también referido como **PropPilot**) es un CRM impulsado por IA diseñado específicamente para profesionales inmobiliarios. Su objetivo es centralizar todo el proceso de ventas — desde la gestión de propiedades y leads hasta la programación de citas, el seguimiento de oportunidades y el contacto con potenciales compradores.
@@ -422,7 +419,133 @@ The agent depends on `LLMProvider` (`base.py`), an abstract interface with one r
 
 Adding `OpenAIProvider`/`HuggingFaceProvider` later means adding another class here and a case in `factory.py` — not touching the agent or the route. `app/ai/llm/errors.py` defines one exception family (`LLMConfigError`, `LLMTimeoutError`, `LLMProviderError`, `LLMInvalidOutputError`) so callers never need to catch a vendor-specific exception type; both providers also expose a `provider_name` (`"ollama"`/`"anthropic"`, logging only — the agent never branches on it) alongside `model_name`.
 
-`AnthropicProvider.generate_structured` gets reliable structured output by forcing a single tool call whose input sc…3562 tokens truncated…t`/`prepare_for_appointment`/`no_action`), `reason`, `suggested_message` (nullable), `confidence` (`0.0`-`1.0`, with the same explicit "a decimal, never a percentage" description Lead Intelligence's `confidence` field needed after real testing — see below). `FollowUpResult` wraps it with the same provenance fields (`contact_id`, `model`, `prompt_version`, `generated_at`).
+`AnthropicProvider.generate_structured` gets reliable structured output by forcing a single tool call whose input schema is the requested Pydantic model's own JSON schema (`response_model.model_json_schema()`, sent as the tool's `input_schema`, with `tool_choice` pinned to that tool's name). `OllamaProvider.generate_structured` uses Ollama's own "Structured outputs" feature instead — the same JSON schema is sent as the request's `format` field, which constrains the model's decoding to that shape; it works with any locally installed chat model, not just tool-calling ones. Neither asks the model to emit JSON in prose and hopes it parses.
+
+`app/ai/llm/factory.py`'s `build_default_provider()` is the one place that decides which provider the app actually uses — see [Provider selection](#provider-selection) below.
+
+### Provider selection
+
+`LLM_PROVIDER` (env var, default `ollama`) picks the branch in `build_default_provider()`:
+
+- **`LLM_PROVIDER=ollama`** (default) — builds an `OllamaProvider` from `OLLAMA_BASE_URL`/`OLLAMA_MODEL`. Needs no `ANTHROPIC_API_KEY` at all; the app starts and this endpoint works with it completely unset.
+- **`LLM_PROVIDER=anthropic`** — builds an `AnthropicProvider` from `ANTHROPIC_API_KEY`/`ANTHROPIC_MODEL`; raises `LLMConfigError` (surfaced as `503`) if the key is missing.
+
+No provider registry — it's an `if`/`elif` in one function, on purpose (see [What's next](#whats-next) for when a registry might actually earn its keep).
+
+### Model configuration
+
+Model names are never hardcoded — `app/core/config.py`'s `ollama_model` (env `OLLAMA_MODEL`, default `llama3.2`, ~2 GB) and `anthropic_model` (env `ANTHROPIC_MODEL`, default `claude-sonnet-5`) are the single source of truth for each provider, read once by the factory above. Change either by setting its environment variable, not by editing code.
+
+`llama3.2` (3B), not the larger `llama3.1` (8B), is the default specifically because this is meant to run well on CPU-only development machines: on hardware with no GPU, `llama3.1` took several minutes per lead for this agent's JSON-schema-constrained output and sometimes still timed out at 300s. If you have GPU acceleration (or don't mind the wait), `llama3.1` gives noticeably better reasoning — just `ollama pull llama3.1` and set `OLLAMA_MODEL=llama3.1`.
+
+### Environment variables
+
+Add to your `.env` (see `.env.example`):
+
+```bash
+# Local development (default) — needs Ollama installed and running, see below.
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=llama3.2
+OLLAMA_TIMEOUT_SECONDS=180  # measured, not guessed — see the note below
+
+# Production option — only read when LLM_PROVIDER=anthropic.
+ANTHROPIC_API_KEY=sk-ant-...    # from https://console.anthropic.com/settings/keys
+ANTHROPIC_MODEL=claude-sonnet-5 # optional, this is already the default
+```
+
+Every other endpoint in this backend works regardless of any of this. With `LLM_PROVIDER=ollama` (the default), `ANTHROPIC_API_KEY` isn't needed at all.
+
+**`OLLAMA_TIMEOUT_SECONDS` exists because of a real bug found through measurement, not guesswork**: `OllamaProvider`'s own class default is 60s, and `build_default_provider()` didn't override it for a while — on this project's actual CPU-only development hardware (see [Agent Evaluation](#agent-evaluation)'s performance numbers), every real request through `/ai/lead-intelligence` or `/ai/follow-up` was silently failing with `LLMTimeoutError` after 60 seconds, well before the model was done. `settings.ollama_timeout_seconds` (default `180`) is now wired through the factory and covered by a regression test (`test_ollama_provider_uses_the_configured_timeout_not_the_class_default` in `tests/test_llm_provider_selection.py`).
+
+### Running Ollama locally
+
+1. Install Ollama — Windows: download from [ollama.com/download](https://ollama.com/download), or `winget install Ollama.Ollama`. macOS/Linux: see the same page.
+2. Pull the configured model (matches `OLLAMA_MODEL`'s default): `ollama pull llama3.2` (~2 GB).
+3. Make sure the server is up: `curl http://localhost:11434/api/tags` should return JSON, not a connection error. The installer usually registers Ollama as a background service that's already running; if not, `ollama serve`.
+4. Call the endpoint as usual (see [API](#api) below) — no other setup needed.
+
+If Ollama isn't installed or the model isn't pulled, `POST /ai/lead-intelligence/{contact_id}` fails cleanly (`502`, with a message telling you exactly which of those two is missing — see [Error handling](#error-handling)) instead of hanging or crashing.
+
+### Structured output (`app/schemas/lead_intelligence.py`)
+
+Two schemas, deliberately separate:
+
+- **`LeadIntelligenceAnalysis`** — exactly what the LLM is asked to produce (its JSON schema *is* the structured-output shape both providers are constrained to): `priority` (`high`/`medium`/`low`, soft enum in `app/schemas/enums.py`), `confidence` (`0.0`-`1.0`), `reasoning`, `positive_signals`/`risk_signals` (lists of short strings), `recommended_next_action` (soft enum: `call`/`whatsapp`/`email`/`schedule_viewing`/`send_properties`/`follow_up`/`meeting`/`re_engage`/`no_action_needed`), and `insufficient_data` (a boolean the model sets instead of guessing when the context is too sparse to say anything meaningful).
+- **`LeadIntelligenceResult`** — what the route actually returns: the analysis plus provenance the agent fills in itself (`contact_id`, `model`, `prompt_version`, `generated_at`) — the LLM can't know its own model name or the current time, so those aren't fields the model fills in.
+
+**Lesson from real local testing (prompt `v2`)**: both `llama3.1` and `llama3.2` initially returned `confidence` as a percentage integer (e.g. `80`) instead of the schema's `0.0`-`1.0` decimal — a JSON schema's `minimum`/`maximum` alone isn't always enough for a small local model to infer the intended scale, even though Anthropic's forced tool-use never showed this. Pydantic correctly rejected it both times (`LLMInvalidOutputError`, never silently coerced or divided by 100 — that would be inventing a value, not validating one). The fix was making both the schema's `Field(description=...)` and the system prompt explicitly state "a decimal between 0.0 and 1.0 (e.g. 0.85), never a percentage" — confirmed fixed by re-running the same contact that had failed.
+
+**Fact vs. inference**: the schema and the system prompt both exist to keep this distinction explicit, regardless of which provider is active. `positive_signals`/`risk_signals`/`reasoning` are instructed to stay traceable to facts already present in the `LeadContext` JSON (an activity count, a stated budget, a status) — the *judgment* (`priority`, `recommended_next_action`, `confidence`) is the inference layered on top. No field here is a raw, unexplained score; `reasoning` is mandatory so a human can always see which facts led to which conclusion.
+
+### System prompt (`app/ai/prompts/lead_intelligence.py`)
+
+Kept in its own module, versioned via `LEAD_INTELLIGENCE_PROMPT_VERSION` (currently `"v1"`, echoed onto every `LeadIntelligenceResult` so a stored result can be traced back to the exact prompt that produced it) — unchanged by, and identical across, whichever provider is active. Defines the agent as a real-estate CRM intelligence assistant that reasons only from the provided CRM data, never invents facts, distinguishes facts from inference, treats a rejected-property → buyer-requirement transition (Case A → Case B, see [AI Context Layer](#ai-context-layer)) as one continuing lead rather than two, sets `insufficient_data` honestly when the context is too sparse, and never claims to take action itself.
+
+### API
+
+`POST /ai/lead-intelligence/{contact_id}` — same auth as every other route (`get_current_org_user`); the agent 404s through `get_lead_context` if the contact doesn't exist or belongs to another organization, before the LLM is ever called.
+
+```bash
+curl -X POST $API/ai/lead-intelligence/$CONTACT_ID -H "Authorization: Bearer $TOKEN"
+```
+
+### Error handling
+
+| Situation | Response |
+|---|---|
+| Contact not found / belongs to another organization | `404` (from `get_lead_context`, same as every other contact-scoped route) |
+| `LLM_PROVIDER=anthropic` selected but `ANTHROPIC_API_KEY` not configured | `503`, generic message — never a raw provider error |
+| Ollama server unreachable (not running, wrong `OLLAMA_BASE_URL`) | `502` to the client; the server-side log/exception says plainly to start Ollama (`ollama serve`) |
+| Configured Ollama model not pulled locally | `502` to the client; the server-side log/exception names the exact `ollama pull <model>` command |
+| Provider call times out (either provider) | `504` |
+| Provider returns an error (Anthropic auth/rate-limit/5xx, or an Ollama HTTP error) | `502`, generic message — provider details are logged server-side only, never sent to the client |
+| Model didn't return the requested structured output, or its output fails schema validation | `502`, generic message |
+
+Every one of these is a generic message to the API consumer — the specific, actionable detail (which command to run, which server to start) only ever reaches the server-side log via `logger.warning(...)` in `LeadIntelligenceAgent.analyze`, never the HTTP response body.
+
+### Read-only, by construction
+
+The agent can analyze, prioritize, and recommend — it cannot send a message, modify a contact or property, create an activity or appointment, or contact anyone. It has no tool other than `get_lead_context`, which is itself read-only; there is nothing in this codebase yet that would let it take an action even if the model asked it to.
+
+### Testing
+
+Fully offline and deterministic, no Ollama/Anthropic required, four files:
+
+- **`tests/test_lead_intelligence_agent.py`** — a `FakeLLMProvider` (implements `LLMProvider`, returns a canned response or raises a canned error, records every call) stands in for any real provider throughout, so this file needs no API key, no local Ollama, and makes no network call. Covers: schema validation (valid payload, out-of-range confidence, unknown priority/action), context retrieval and organization isolation (a nonexistent or cross-org contact 404s *before* the LLM is ever called — asserted via `fake.calls == []`), prompt construction (the contact's name and key facts actually appear in the prompt sent to the "model"), every documented error path (timeout, invalid output) at both the agent and route level, and the `502`/`503`/`404` route paths.
+- **`tests/test_ollama_provider.py`** — `OllamaProvider` in isolation: a valid structured response, the exact request shape sent (`format` = the schema, correct `model`), timeout, connection-refused (with the "Is Ollama running?" message asserted), model-not-found (404, with the `ollama pull` message asserted), and both malformed-response-shape and schema-validation failure. Every case but one monkeypatches `httpx.post`; the exception is a real connection to a closed local port, proving the "Ollama unavailable" path against a genuine socket failure rather than only a simulated one — still instant, no install needed.
+- **`tests/test_llm_provider_selection.py`** — `build_default_provider()`'s branching: default (`ollama`, no key needed), `anthropic` without a key (`LLMConfigError`), `anthropic` with one (returns a working `AnthropicProvider` — confirms the pre-Ollama implementation is still intact and functional), and both providers satisfying the same `LLMProvider` interface.
+
+Two integration tests call a real provider and are skipped by default — CI and the normal `uv run pytest` run never depend on either:
+
+```bash
+# Real Ollama, against the demo data's Carlos/Gabriela/Carolina/Sergio — requires the explicit
+# RUN_OLLAMA_INTEGRATION_TESTS=1 opt-in (not just Ollama being reachable — see below) plus a live
+# Ollama server. Each contact can take 1-3+ minutes on CPU-only hardware; expect several minutes total.
+RUN_OLLAMA_INTEGRATION_TESTS=1 uv run pytest tests/test_lead_intelligence_ollama_integration.py -v -s
+
+# Real Anthropic — skipped unless ANTHROPIC_API_KEY resolves through settings.
+ANTHROPIC_API_KEY=sk-ant-... uv run pytest tests/test_lead_intelligence_integration.py -v -s
+```
+
+The Ollama test needs an explicit env var, not just Ollama being reachable, on purpose: on a dev machine where Ollama happens to already be running for something unrelated, a plain `uv run pytest` must stay fast (a few seconds) rather than silently turning into several minutes of real LLM calls just because Ollama was up in the background.
+
+## Follow-up Agent
+
+The second real AI agent, built on exactly the same architecture as [Lead Intelligence Agent](#lead-intelligence-agent) — same `LeadContext`, same `LLMProvider` abstraction, same providers, same route/error-handling shape. It answers a different question, though:
+
+| | Lead Intelligence | Follow-up |
+|---|---|---|
+| Question | "How important is this lead, what should the advisor prioritize?" | "Does this lead need follow-up **right now**, through which channel, and what should the advisor say?" |
+| Schema | `LeadIntelligenceAnalysis` | `FollowUpRecommendation` |
+| Prompt | `app/ai/prompts/lead_intelligence.py` | `app/ai/prompts/follow_up.py` (written from scratch, not derived from the other) |
+| Route | `POST /ai/lead-intelligence/{contact_id}` | `POST /ai/follow-up/{contact_id}` |
+
+**Flow**: `CurrentUser → get_lead_context → LeadContext → LLMProvider → FollowUpRecommendation → FollowUpResult` — identical shape to Lead Intelligence's, reusing the same AI Tool. `FollowUpAgent` (`app/ai/follow_up_agent.py`) never touches a repository or Supabase directly; `ActivityRepository`/`BuyerRequirementRepository`/`PropertyInterestRepository`/`PropertyRepository` are all reused exactly as `LeadContextService` already composes them — no new repository or database-access code was needed for this agent.
+
+### Response schema (`app/schemas/follow_up.py`)
+
+`FollowUpRecommendation` — what the LLM produces: `should_follow_up` (bool), `priority` (reuses the `LeadPriority` soft enum — same three values, no reason for a second tuple), `recommended_channel` (`whatsapp`/`email`/`call`/`none`), `recommended_action` (`follow_up`/`send_properties`/`confirm_viewing`/`check_in`/`call_client`/`prepare_for_appointment`/`no_action`), `reason`, `suggested_message` (nullable), `confidence` (`0.0`-`1.0`, with the same explicit "a decimal, never a percentage" description Lead Intelligence's `confidence` field needed after real testing — see below). `FollowUpResult` wraps it with the same provenance fields (`contact_id`, `model`, `prompt_version`, `generated_at`).
 
 **`suggested_message` is a prompt-level rule, not a hard schema validator**: the brief asks that it be null/empty when `should_follow_up` is false, but this is enforced only by instructing the model, not by a Pydantic cross-field check that would reject the response outright. Given what real local-model testing already showed with Lead Intelligence's `confidence` field (small models don't always follow instructions embedded only in a schema description), adding a strict validator here risked the same class of spurious `LLMInvalidOutputError` for a cosmetic inconsistency (a stray non-null message) rather than a real correctness problem (a wrong probability). `confidence`'s numeric range stays hard-enforced because an out-of-range confidence is actually meaningless; a redundant message alongside `should_follow_up=false` is just noise the advisor would immediately recognize as irrelevant.
 
