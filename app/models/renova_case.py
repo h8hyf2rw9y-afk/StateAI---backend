@@ -115,6 +115,12 @@ class RenovaCase(Base, UUIDPKMixin, TimestampMixin):
     final_offer: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     market_value: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     property_tax_debt: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    # Soft enum: "mxn" (default, a real peso figure, counted in total_debt) or
+    # "years" (a whole number of years owed — a WhatsApp conversation often
+    # only reveals this, never the peso amount — excluded from total_debt
+    # since years and pesos can't be summed). See app/schemas/renova_case.py's
+    # total_debt computation.
+    property_tax_debt_unit: Mapped[str] = mapped_column(nullable=False, default="mxn", server_default="mxn")
     other_debt: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     water_debt: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     electricity_debt: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)

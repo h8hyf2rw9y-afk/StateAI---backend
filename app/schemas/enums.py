@@ -444,3 +444,13 @@ RenovaDeedsStatus = Literal["yes", "no", "unknown"]
 # for how (and how fast) a purchase can close.
 RENOVA_OCCUPANCY_STATUSES: tuple[str, ...] = ("lives_there", "vacant", "rented", "lent", "other")
 RenovaOccupancyStatus = Literal["lives_there", "vacant", "rented", "lent", "other"]
+
+# What unit "Deuda predial" (property tax debt) was captured in — a WhatsApp
+# conversation sometimes only reveals how many YEARS of property tax are
+# owed, never the peso amount. "mxn" (default) means property_tax_debt is a
+# real peso figure and is included in total_debt; "years" means it is a
+# whole number of years owed and is excluded from total_debt (years cannot be
+# summed with pesos) — see RenovaCase.property_tax_debt_unit and
+# _RenovaCaseFields.total_debt.
+RENOVA_PROPERTY_TAX_DEBT_UNITS: tuple[str, ...] = ("mxn", "years")
+RenovaPropertyTaxDebtUnit = Literal["mxn", "years"]

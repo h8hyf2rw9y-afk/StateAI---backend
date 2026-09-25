@@ -21,6 +21,7 @@ from app.schemas.enums import (
     RenovaDwellingType,
     RenovaMaritalStatus,
     RenovaOccupancyStatus,
+    RenovaPropertyTaxDebtUnit,
     RenovaSource,
 )
 
@@ -81,6 +82,7 @@ _REQUIRED_COLUMNS = (
     "has_deeds",
     "currency",
     "is_duplex",
+    "property_tax_debt_unit",
 )
 
 DEBT_FIELDS = ("property_tax_debt", "other_debt", "water_debt", "electricity_debt", "gas_debt")
@@ -88,10 +90,13 @@ FINANCIAL_FIELDS = (
     "final_offer",
     "market_value",
     *DEBT_FIELDS,
+    "property_tax_debt_unit",
     "debt_owed_to",
     "owner_expected_amount",
     "currency",
 )
+
+PROPERTY_TAX_DEBT_MAX_YEARS = 60
 
 
 def sum_debts(values: list[Decimal | None]) -> Decimal | None:
@@ -159,7 +164,29 @@ class _SecretFormatMixin(BaseModel):
         return value
 
 
-class RenovaCaseBase(_BlankToNoneMixin):
+class _PropertyTaxDebtUnitMixin(BaseModel):
+    """
+    When `property_tax_debt_unit` is explicitly "years" IN THIS SAME
+    request, `property_tax_debt` must be a whole, reasonable number of years
+    — not a peso amount with cents. Only checked when both fields are present
+    together: a PATCH that sends just one of the two is left alone (the
+    other's current stored value is unknown at validation time), same as
+    every other partial-update field in this schema.
+    """
+
+    @model_validator(mode="after")
+    def _valid_property_tax_debt_for_its_unit(self):
+        unit = getattr(self, "property_tax_debt_unit", None)
+        value = getattr(self, "property_tax_debt", None)
+        if unit == "years" and value is not None:
+            if value != value.to_integral_value():
+                raise ValueError("Years must be a whole number.")
+            if value > PROPERTY_TAX_DEBT_MAX_YEARS:
+                raise ValueError(f"Years must be {PROPERTY_TAX_DEBT_MAX_YEARS} or fewer.")
+        return self
+
+
+class RenovaCaseBase(_PropertyTaxDebtUnitMixin, _BlankToNoneMixin):
     # Registro
     assigned_user_id: uuid.UUID
     entry_date: date
@@ -191,6 +218,7 @@ class RenovaCaseBase(_BlankToNoneMixin):
     final_offer: Money | None = None
     market_value: Money | None = None
     property_tax_debt: Money | None = None
+    property_tax_debt_unit: RenovaPropertyTaxDebtUnit = "mxn"
     other_debt: Money | None = None
     water_debt: Money | None = None
     electricity_debt: Money | None = None
@@ -215,7 +243,7 @@ class RenovaCaseCreate(_SecretFormatMixin, RenovaCaseBase):
     credit_number: SecretIdentifier | None = None
 
 
-class RenovaCaseUpdate(_SecretFormatMixin, _BlankToNoneMixin):
+class RenovaCaseUpdate(_PropertyTaxDebtUnitMixin, _SecretFormatMixin, _BlankToNoneMixin):
     """
     All fields optional — PATCH semantics (see ContactUpdate). Sending
     `nss`/`credit_number` as null clears the stored value; omitting them
@@ -250,6 +278,7 @@ class RenovaCaseUpdate(_SecretFormatMixin, _BlankToNoneMixin):
     final_offer: Money | None = None
     market_value: Money | None = None
     property_tax_debt: Money | None = None
+    property_tax_debt_unit: RenovaPropertyTaxDebtUnit | None = None
     other_debt: Money | None = None
     water_debt: Money | None = None
     electricity_debt: Money | None = None
@@ -286,6 +315,7 @@ class _RenovaCaseFields(ORMModel):
     final_offer: Decimal | None
     market_value: Decimal | None
     property_tax_debt: Decimal | None
+    property_tax_debt_unit: str
     other_debt: Decimal | None
     water_debt: Decimal | None
     electricity_debt: Decimal | None
@@ -297,7 +327,13 @@ class _RenovaCaseFields(ORMModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def total_debt(self) -> Decimal | None:
-        return sum_debts([getattr(self, f) for f in DEBT_FIELDS])
+        # property_tax_debt is only a peso figure — and only summable —
+        # when captured in MXN. When it's a number of YEARS owed instead
+        # (property_tax_debt_unit == "years"), it's excluded here entirely;
+        # years and pesos can't be added together.
+        debts = [self.property_tax_debt if self.property_tax_debt_unit == "mxn" else None]
+        debts += [getattr(self, f) for f in DEBT_FIELDS if f != "property_tax_debt"]
+        return sum_debts(debts)
 
 
 class RenovaCaseListItem(_RenovaCaseFields):
