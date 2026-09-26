@@ -70,6 +70,16 @@ def _ask(client, conversation_id: str, content: str):
     )
 
 
+def test_renova_chat_routes_are_registered_in_openapi(client):
+    """Fail loudly if main stops mounting the Renova chat router."""
+    response = client.get("/openapi.json")
+
+    assert response.status_code == 200
+    paths = response.json()["paths"]
+    assert "/api/v1/renova/chat/conversations" in paths
+    assert {"get", "post"} <= set(paths["/api/v1/renova/chat/conversations"])
+
+
 def test_chat_answers_active_count_from_org_scoped_data(client, db_session, current_user):
     db_session.add_all([
         _case(current_user),
