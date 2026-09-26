@@ -11,6 +11,7 @@ from app.schemas.renova_case import (
     RenovaCaseListItem,
     RenovaCaseRead,
     RenovaCaseUpdate,
+    RenovaPipelineResponse,
     RenovaSensitiveData,
     RenovaIneImage,
 )
@@ -22,12 +23,30 @@ from app.services.renova_case_service import RenovaCaseService
 # should no longer be pursued is moved to status "cancelled" (and audited).
 router = APIRouter(prefix="/renova/cases", tags=["renova"])
 
+# A second, small router for /renova/pipeline (NOT nested under /renova/cases
+# — it returns many cases already grouped by stage, a different shape from
+# the plain listing above). Stage moves reuse PATCH /renova/cases/{id} as-is:
+# it already validates the case belongs to this organization and already
+# records RENOVA_CASE_STATUS_CHANGED when `status` changes, so there is
+# nothing pipeline-specific to add there.
+pipeline_router = APIRouter(prefix="/renova", tags=["renova"])
+
+
+@pipeline_router.get("/pipeline", response_model=RenovaPipelineResponse)
+def get_renova_pipeline(
+    current_user: CurrentUser = Depends(get_current_org_user),
+    db: Session = Depends(get_db),
+) -> RenovaPipelineResponse:
+    """The Renova Kanban board: every case in an active pipeline stage, grouped by stage. Never NSS, credit number, INE images or ciphertext."""
+    return RenovaCaseService(db).pipeline(current_user.organization_id)
+
 
 @router.get("", response_model=list[RenovaCaseListItem])
 def list_renova_cases(
     q: str | None = Query(None, max_length=100, description="Matches the owner's name or phone."),
     status_: RenovaCaseStatus | None = Query(None, alias="status"),
     assigned_user_id: uuid.UUID | None = Query(None),
+    archived: bool | None = Query(None, description="Omitted -> only non-archived cases. true -> only archived ones."),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     current_user: CurrentUser = Depends(get_current_org_user),
@@ -39,6 +58,7 @@ def list_renova_cases(
         q=q,
         status_=status_,
         assigned_user_id=assigned_user_id,
+        archived=archived,
         limit=limit,
         offset=offset,
     )

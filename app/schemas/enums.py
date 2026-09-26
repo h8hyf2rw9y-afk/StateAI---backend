@@ -408,6 +408,23 @@ RenovaCaseStatus = Literal[
     "cancelled",
 ]
 
+# The Renova Kanban board (GET /renova/pipeline) shows exactly these six
+# columns, in this order — a purchase-flow SUBSET of RENOVA_CASE_STATUSES.
+# "draft" (not yet a real prospect), "reviewing" (an earlier, separate review
+# step some cases still use) and the two exits "rejected"/"cancelled" are
+# real, still-supported statuses — a case in any of them keeps its full
+# history and can be reassigned from its detail page — but none of the four
+# are a pipeline column: the board itself only ever shows a case that is
+# actively moving through the purchase flow.
+RENOVA_PIPELINE_STAGES: tuple[str, ...] = (
+    "new",
+    "offer_preparation",
+    "offer_sent",
+    "negotiating",
+    "accepted",
+    "purchased",
+)
+
 # Initially only WhatsApp is how cases arrive; the other values exist so
 # adding a channel later is a one-line change here (soft enum, no migration).
 RENOVA_SOURCES: tuple[str, ...] = ("whatsapp", "phone", "referral", "website", "other")
@@ -428,8 +445,13 @@ RenovaMaritalStatus = Literal[
     "single", "married_conjugal_partnership", "married_separate_property", "divorced", "widowed", "common_law", "unknown",
 ]
 
-RENOVA_DWELLING_TYPES: tuple[str, ...] = ("house", "apartment", "duplex")
-RenovaDwellingType = Literal["house", "apartment", "duplex"]
+# Mutually exclusive BASE dwelling type. "Duplex" is deliberately NOT a
+# member here — it is a configuration a house or an apartment can additionally
+# have (RenovaCase.is_duplex), not a third base type. A case can therefore be
+# a "Casa dúplex" or "Departamento dúplex", which a flat 3-way enum could
+# never represent (see migration b2f7a4c9d310).
+RENOVA_DWELLING_TYPES: tuple[str, ...] = ("house", "apartment")
+RenovaDwellingType = Literal["house", "apartment"]
 
 # Three-valued on purpose: "we haven't asked yet" is not the same as "no".
 RENOVA_DEEDS_STATUSES: tuple[str, ...] = ("yes", "no", "unknown")
@@ -439,3 +461,13 @@ RenovaDeedsStatus = Literal["yes", "no", "unknown"]
 # for how (and how fast) a purchase can close.
 RENOVA_OCCUPANCY_STATUSES: tuple[str, ...] = ("lives_there", "vacant", "rented", "lent", "other")
 RenovaOccupancyStatus = Literal["lives_there", "vacant", "rented", "lent", "other"]
+
+# What unit "Deuda predial" (property tax debt) was captured in — a WhatsApp
+# conversation sometimes only reveals how many YEARS of property tax are
+# owed, never the peso amount. "mxn" (default) means property_tax_debt is a
+# real peso figure and is included in total_debt; "years" means it is a
+# whole number of years owed and is excluded from total_debt (years cannot be
+# summed with pesos) — see RenovaCase.property_tax_debt_unit and
+# _RenovaCaseFields.total_debt.
+RENOVA_PROPERTY_TAX_DEBT_UNITS: tuple[str, ...] = ("mxn", "years")
+RenovaPropertyTaxDebtUnit = Literal["mxn", "years"]

@@ -21,6 +21,7 @@ from app.schemas.enums import (
     RenovaDwellingType,
     RenovaMaritalStatus,
     RenovaOccupancyStatus,
+    RenovaPropertyTaxDebtUnit,
     RenovaSource,
 )
 
@@ -71,17 +72,32 @@ _OPTIONAL_TEXT_FIELDS = (
 
 # Columns that are NOT NULL in the database: a PATCH may change them but must
 # never explicitly null them.
-_REQUIRED_COLUMNS = ("owner_name", "owner_phone", "entry_date", "assigned_user_id", "source", "status", "has_deeds", "currency")
+_REQUIRED_COLUMNS = (
+    "owner_name",
+    "owner_phone",
+    "entry_date",
+    "assigned_user_id",
+    "source",
+    "status",
+    "has_deeds",
+    "currency",
+    "is_duplex",
+    "property_tax_debt_unit",
+    "archived",
+)
 
 DEBT_FIELDS = ("property_tax_debt", "other_debt", "water_debt", "electricity_debt", "gas_debt")
 FINANCIAL_FIELDS = (
     "final_offer",
     "market_value",
     *DEBT_FIELDS,
+    "property_tax_debt_unit",
     "debt_owed_to",
     "owner_expected_amount",
     "currency",
 )
+
+PROPERTY_TAX_DEBT_MAX_YEARS = 60
 
 
 def sum_debts(values: list[Decimal | None]) -> Decimal | None:
@@ -149,12 +165,39 @@ class _SecretFormatMixin(BaseModel):
         return value
 
 
-class RenovaCaseBase(_BlankToNoneMixin):
+class _PropertyTaxDebtUnitMixin(BaseModel):
+    """
+    When `property_tax_debt_unit` is explicitly "years" IN THIS SAME
+    request, `property_tax_debt` must be a whole, reasonable number of years
+    — not a peso amount with cents. Only checked when both fields are present
+    together: a PATCH that sends just one of the two is left alone (the
+    other's current stored value is unknown at validation time), same as
+    every other partial-update field in this schema.
+    """
+
+    @model_validator(mode="after")
+    def _valid_property_tax_debt_for_its_unit(self):
+        unit = getattr(self, "property_tax_debt_unit", None)
+        value = getattr(self, "property_tax_debt", None)
+        if unit == "years" and value is not None:
+            if value != value.to_integral_value():
+                raise ValueError("Years must be a whole number.")
+            if value > PROPERTY_TAX_DEBT_MAX_YEARS:
+                raise ValueError(f"Years must be {PROPERTY_TAX_DEBT_MAX_YEARS} or fewer.")
+        return self
+
+
+class RenovaCaseBase(_PropertyTaxDebtUnitMixin, _BlankToNoneMixin):
     # Registro
     assigned_user_id: uuid.UUID
     entry_date: date
     source: RenovaSource = "whatsapp"
     status: RenovaCaseStatus = "new"
+    # Hides this case from the default Leads -> Renova list. Only ever
+    # meaningful once status is "rejected"/"cancelled" — see
+    # RenovaCaseService.update, which enforces that and never trusts a
+    # client-supplied True on a case in an active stage.
+    archived: bool = False
     # Propietario
     owner_name: Name
     owner_phone: Phone
@@ -168,6 +211,7 @@ class RenovaCaseBase(_BlankToNoneMixin):
     postal_code: PostalCode | None = None
     # Inmueble
     dwelling_type: RenovaDwellingType | None = None
+    is_duplex: bool = False
     occupancy_status: RenovaOccupancyStatus | None = None
     floors: int | None = Field(default=None, ge=0, le=100)
     bathrooms: Decimal | None = Field(default=None, ge=0, le=99, max_digits=3, decimal_places=1)
@@ -180,6 +224,7 @@ class RenovaCaseBase(_BlankToNoneMixin):
     final_offer: Money | None = None
     market_value: Money | None = None
     property_tax_debt: Money | None = None
+    property_tax_debt_unit: RenovaPropertyTaxDebtUnit = "mxn"
     other_debt: Money | None = None
     water_debt: Money | None = None
     electricity_debt: Money | None = None
@@ -204,7 +249,7 @@ class RenovaCaseCreate(_SecretFormatMixin, RenovaCaseBase):
     credit_number: SecretIdentifier | None = None
 
 
-class RenovaCaseUpdate(_SecretFormatMixin, _BlankToNoneMixin):
+class RenovaCaseUpdate(_PropertyTaxDebtUnitMixin, _SecretFormatMixin, _BlankToNoneMixin):
     """
     All fields optional — PATCH semantics (see ContactUpdate). Sending
     `nss`/`credit_number` as null clears the stored value; omitting them
@@ -215,6 +260,7 @@ class RenovaCaseUpdate(_SecretFormatMixin, _BlankToNoneMixin):
     entry_date: date | None = None
     source: RenovaSource | None = None
     status: RenovaCaseStatus | None = None
+    archived: bool | None = None
     owner_name: Name | None = None
     owner_phone: Phone | None = None
     marital_status: RenovaMaritalStatus | None = None
@@ -227,6 +273,7 @@ class RenovaCaseUpdate(_SecretFormatMixin, _BlankToNoneMixin):
     municipality: ShortText | None = None
     postal_code: PostalCode | None = None
     dwelling_type: RenovaDwellingType | None = None
+    is_duplex: bool | None = None
     occupancy_status: RenovaOccupancyStatus | None = None
     floors: int | None = Field(default=None, ge=0, le=100)
     bathrooms: Decimal | None = Field(default=None, ge=0, le=99, max_digits=3, decimal_places=1)
@@ -238,6 +285,7 @@ class RenovaCaseUpdate(_SecretFormatMixin, _BlankToNoneMixin):
     final_offer: Money | None = None
     market_value: Money | None = None
     property_tax_debt: Money | None = None
+    property_tax_debt_unit: RenovaPropertyTaxDebtUnit | None = None
     other_debt: Money | None = None
     water_debt: Money | None = None
     electricity_debt: Money | None = None
@@ -266,13 +314,16 @@ class _RenovaCaseFields(ORMModel):
     entry_date: date
     source: str
     status: str
+    archived: bool
     owner_name: str
     owner_phone: str
     dwelling_type: str | None
+    is_duplex: bool
     currency: str
     final_offer: Decimal | None
     market_value: Decimal | None
     property_tax_debt: Decimal | None
+    property_tax_debt_unit: str
     other_debt: Decimal | None
     water_debt: Decimal | None
     electricity_debt: Decimal | None
@@ -284,7 +335,13 @@ class _RenovaCaseFields(ORMModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def total_debt(self) -> Decimal | None:
-        return sum_debts([getattr(self, f) for f in DEBT_FIELDS])
+        # property_tax_debt is only a peso figure — and only summable —
+        # when captured in MXN. When it's a number of YEARS owed instead
+        # (property_tax_debt_unit == "years"), it's excluded here entirely;
+        # years and pesos can't be added together.
+        debts = [self.property_tax_debt if self.property_tax_debt_unit == "mxn" else None]
+        debts += [getattr(self, f) for f in DEBT_FIELDS if f != "property_tax_debt"]
+        return sum_debts(debts)
 
 
 class RenovaCaseListItem(_RenovaCaseFields):
@@ -328,6 +385,44 @@ class RenovaCaseRead(_RenovaCaseFields):
     credit_number_masked: str | None = None
     has_nss: bool = False
     has_credit_number: bool = False
+
+
+class RenovaPipelineCase(ORMModel):
+    """
+    One card on the Renova Kanban board (GET /renova/pipeline) — as lean as
+    RenovaCaseListItem, and for the same reason: never NSS, credit number,
+    INE images or any ciphertext, not even masked. Field names are exactly
+    the model's own (final_offer, other_debt, property_tax_debt_unit, …) —
+    no renamed aliases.
+    """
+
+    id: uuid.UUID
+    owner_name: str
+    owner_phone: str
+    status: str
+    assigned_user_id: uuid.UUID | None
+    dwelling_type: str | None
+    is_duplex: bool
+    final_offer: Decimal | None
+    market_value: Decimal | None
+    other_debt: Decimal | None
+    property_tax_debt: Decimal | None
+    property_tax_debt_unit: str
+    owner_expected_amount: Decimal | None
+    updated_at: datetime
+
+
+class RenovaPipelineStage(BaseModel):
+    """One Kanban column: a status from RENOVA_PIPELINE_STAGES and its cards, in that stage's order."""
+
+    status: str
+    cases: list[RenovaPipelineCase]
+
+
+class RenovaPipelineResponse(BaseModel):
+    """Every active-flow case, already grouped by stage in board order — one request, no client-side pagination gaps."""
+
+    stages: list[RenovaPipelineStage]
 
 
 class RenovaSensitiveData(BaseModel):

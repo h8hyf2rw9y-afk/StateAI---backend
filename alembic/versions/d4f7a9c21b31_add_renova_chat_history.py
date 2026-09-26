@@ -1,7 +1,7 @@
 """add Renova conversational chat history
 
 Revision ID: d4f7a9c21b31
-Revises: 7f3c1a9e42d1
+Revises: d4a8e3f61c92
 """
 
 from typing import Sequence, Union
@@ -10,7 +10,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision: str = "d4f7a9c21b31"
-down_revision: Union[str, None] = "7f3c1a9e42d1"
+down_revision: Union[str, None] = "d4a8e3f61c92"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

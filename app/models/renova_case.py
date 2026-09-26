@@ -68,6 +68,12 @@ class RenovaCase(Base, UUIDPKMixin, TimestampMixin):
     # Soft enums (app/schemas/enums.py): source, status.
     source: Mapped[str] = mapped_column(nullable=False, default="whatsapp", server_default="whatsapp")
     status: Mapped[str] = mapped_column(nullable=False, default="new", server_default="new")
+    # Hides a case from the default Leads -> Renova list without deleting it
+    # (there is no delete route by design). Only meaningful for a case that
+    # has already left the purchase flow: RenovaCaseService.update refuses to
+    # set this True unless status is "rejected"/"cancelled", and clears it
+    # automatically if the case is ever reopened to another status.
+    archived: Mapped[bool] = mapped_column(nullable=False, default=False, server_default="false")
 
     # --- Propietario ------------------------------------------------------
     owner_name: Mapped[str] = mapped_column(nullable=False)
@@ -92,8 +98,16 @@ class RenovaCase(Base, UUIDPKMixin, TimestampMixin):
     postal_code: Mapped[str | None] = mapped_column(nullable=True)  # 5-digit Mexican CP
 
     # --- Inmueble ---------------------------------------------------------
-    # Soft enums: dwelling_type, occupancy_status ("Situación actual"), has_deeds.
+    # Soft enums: dwelling_type (base type — "house"/"apartment" only),
+    # occupancy_status ("Situación actual"), has_deeds. `is_duplex` is a
+    # separate boolean CONFIGURATION, not a third dwelling_type value: a
+    # duplex is still fundamentally a house or an apartment, so "Casa" +
+    # is_duplex=True and "Departamento" + is_duplex=True are both valid and
+    # distinct from a plain "Casa"/"Departamento" (see migration
+    # b2f7a4c9d310, which also carries forward any case previously saved with
+    # the old dwelling_type="duplex" value).
     dwelling_type: Mapped[str | None] = mapped_column(nullable=True)
+    is_duplex: Mapped[bool] = mapped_column(nullable=False, default=False, server_default="false")
     occupancy_status: Mapped[str | None] = mapped_column(nullable=True)
     floors: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     bathrooms: Mapped[Decimal | None] = mapped_column(Numeric(3, 1), nullable=True)  # half-baths are common
@@ -107,6 +121,12 @@ class RenovaCase(Base, UUIDPKMixin, TimestampMixin):
     final_offer: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     market_value: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     property_tax_debt: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    # Soft enum: "mxn" (default, a real peso figure, counted in total_debt) or
+    # "years" (a whole number of years owed — a WhatsApp conversation often
+    # only reveals this, never the peso amount — excluded from total_debt
+    # since years and pesos can't be summed). See app/schemas/renova_case.py's
+    # total_debt computation.
+    property_tax_debt_unit: Mapped[str] = mapped_column(nullable=False, default="mxn", server_default="mxn")
     other_debt: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     water_debt: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     electricity_debt: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)

@@ -389,6 +389,9 @@ def _load_migration(filename: str = "a7c3e91d5b20_add_renova_cases.py"):
 
 ADDRESS_MIGRATION = "b81f4c2e7a63_add_renova_address_and_occupancy.py"
 INE_MIGRATION = "f12a89d7e430_add_renova_ine_images.py"
+DUPLEX_MIGRATION = "b2f7a4c9d310_split_renova_duplex_from_dwelling_type.py"
+PROPERTY_TAX_DEBT_UNIT_MIGRATION = "c9e5f1a72b84_add_renova_property_tax_debt_unit.py"
+ARCHIVED_MIGRATION = "d4a8e3f61c92_add_renova_case_archived.py"
 
 
 def _render(module, direction: str) -> str:
@@ -434,7 +437,10 @@ def test_address_migration_chains_and_only_adds_nullable_columns_to_renova():
 
 def test_migrations_together_match_the_model():
     sql = (_render_upgrade_sql() + _render(_load_migration(ADDRESS_MIGRATION), "upgrade")
-           + _render(_load_migration(INE_MIGRATION), "upgrade"))
+           + _render(_load_migration(INE_MIGRATION), "upgrade")
+           + _render(_load_migration(DUPLEX_MIGRATION), "upgrade")
+           + _render(_load_migration(PROPERTY_TAX_DEBT_UNIT_MIGRATION), "upgrade")
+           + _render(_load_migration(ARCHIVED_MIGRATION), "upgrade"))
     table = RenovaCase.__table__
 
     for column in table.columns:

@@ -73,7 +73,8 @@ def test_create_case_with_every_section_filled(client: TestClient, current_user:
         marital_status="married_conjugal_partnership",
         spouse_name="Juan Pérez",
         spouse_phone="+52 81 5555 0202",
-        dwelling_type="duplex",
+        dwelling_type="apartment",
+        is_duplex=True,
         floors=2,
         bathrooms="2.5",
         bedrooms=3,
@@ -95,7 +96,7 @@ def test_create_case_with_every_section_filled(client: TestClient, current_user:
         notes="Contactar por la tarde.",
     )
 
-    assert case["dwelling_type"] == "duplex"
+    assert case["dwelling_type"] == "apartment" and case["is_duplex"] is True
     assert case["floors"] == 2 and case["bedrooms"] == 3
     assert Decimal(case["bathrooms"]) == Decimal("2.5")
     assert Decimal(case["market_value"]) == Decimal("1400000.50")
