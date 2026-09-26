@@ -68,6 +68,12 @@ class RenovaCase(Base, UUIDPKMixin, TimestampMixin):
     # Soft enums (app/schemas/enums.py): source, status.
     source: Mapped[str] = mapped_column(nullable=False, default="whatsapp", server_default="whatsapp")
     status: Mapped[str] = mapped_column(nullable=False, default="new", server_default="new")
+    # Hides a case from the default Leads -> Renova list without deleting it
+    # (there is no delete route by design). Only meaningful for a case that
+    # has already left the purchase flow: RenovaCaseService.update refuses to
+    # set this True unless status is "rejected"/"cancelled", and clears it
+    # automatically if the case is ever reopened to another status.
+    archived: Mapped[bool] = mapped_column(nullable=False, default=False, server_default="false")
 
     # --- Propietario ------------------------------------------------------
     owner_name: Mapped[str] = mapped_column(nullable=False)

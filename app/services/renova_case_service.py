@@ -81,11 +81,18 @@ class RenovaCaseService:
         q: str | None = None,
         status_: str | None = None,
         assigned_user_id: uuid.UUID | None = None,
+        archived: bool | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[RenovaCaseListItem]:
         cases = self.repo.list(
-            organization_id, q=q, status=status_, assigned_user_id=assigned_user_id, limit=limit, offset=offset
+            organization_id,
+            q=q,
+            status=status_,
+            assigned_user_id=assigned_user_id,
+            archived=archived,
+            limit=limit,
+            offset=offset,
         )
         return [RenovaCaseListItem.model_validate(c) for c in cases]
 
@@ -232,9 +239,15 @@ class RenovaCaseService:
         provided = data.model_dump(exclude_unset=True)
         if "assigned_user_id" in provided:
             self._validate_assignee(organization_id, provided["assigned_user_id"])
+        if provided.get("archived") is True and provided.get("status", case.status) not in ("rejected", "cancelled"):
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Only rejected or cancelled cases can be archived.")
 
         before_snapshot = self._audit_snapshot(case)
         before_values = {f: getattr(case, f) for f in provided if f not in _SENSITIVE_INPUTS}
+        # Tracked even when this request never touched `archived`, so
+        # reopening a case (moving its status away from rejected/cancelled,
+        # which auto-clears the flag below) still gets its own audit row.
+        before_values.setdefault("archived", case.archived)
 
         sensitive_present = {k: getattr(data, k) for k in _SENSITIVE_INPUTS if k in data.model_fields_set}
         encrypted = self._encrypt_inputs(sensitive_present, only_set=set(sensitive_present))
@@ -248,6 +261,12 @@ class RenovaCaseService:
                 setattr(case, key, None)
         for column, ciphertext in encrypted.items():
             setattr(case, column, ciphertext)
+        # Archiving only ever makes sense once a case has left the purchase
+        # flow; reopening it (moving status away from rejected/cancelled)
+        # always clears the flag too, even if this request never sent
+        # `archived` at all.
+        if case.status not in ("rejected", "cancelled") and case.archived:
+            case.archived = False
         self.db.flush()
         self.db.refresh(case)
 
@@ -348,3 +367,5 @@ class RenovaCaseService:
             record("RENOVA_CASE_ASSIGNEE_CHANGED")
         if changed & set(FINANCIAL_FIELDS):
             record("RENOVA_CASE_FINANCIALS_UPDATED")
+        if "archived" in changed:
+            record("RENOVA_CASE_ARCHIVED" if after["archived"] else "RENOVA_CASE_UNARCHIVED")

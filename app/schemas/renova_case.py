@@ -83,6 +83,7 @@ _REQUIRED_COLUMNS = (
     "currency",
     "is_duplex",
     "property_tax_debt_unit",
+    "archived",
 )
 
 DEBT_FIELDS = ("property_tax_debt", "other_debt", "water_debt", "electricity_debt", "gas_debt")
@@ -192,6 +193,11 @@ class RenovaCaseBase(_PropertyTaxDebtUnitMixin, _BlankToNoneMixin):
     entry_date: date
     source: RenovaSource = "whatsapp"
     status: RenovaCaseStatus = "new"
+    # Hides this case from the default Leads -> Renova list. Only ever
+    # meaningful once status is "rejected"/"cancelled" — see
+    # RenovaCaseService.update, which enforces that and never trusts a
+    # client-supplied True on a case in an active stage.
+    archived: bool = False
     # Propietario
     owner_name: Name
     owner_phone: Phone
@@ -254,6 +260,7 @@ class RenovaCaseUpdate(_PropertyTaxDebtUnitMixin, _SecretFormatMixin, _BlankToNo
     entry_date: date | None = None
     source: RenovaSource | None = None
     status: RenovaCaseStatus | None = None
+    archived: bool | None = None
     owner_name: Name | None = None
     owner_phone: Phone | None = None
     marital_status: RenovaMaritalStatus | None = None
@@ -307,6 +314,7 @@ class _RenovaCaseFields(ORMModel):
     entry_date: date
     source: str
     status: str
+    archived: bool
     owner_name: str
     owner_phone: str
     dwelling_type: str | None

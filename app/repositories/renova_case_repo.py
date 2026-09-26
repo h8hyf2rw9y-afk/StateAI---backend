@@ -26,10 +26,15 @@ class RenovaCaseRepository(OrgScopedRepository[RenovaCase]):
         q: str | None = None,
         status: str | None = None,
         assigned_user_id: uuid.UUID | None = None,
+        archived: bool | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[RenovaCase]:
         stmt = select(RenovaCase).where(RenovaCase.organization_id == organization_id)
+        # Not specified -> hide archived cases by default, same as a plain
+        # "not yet cancelled" list would: the caller has to explicitly ask
+        # for archived=true (the "Archivados" section) to see them.
+        stmt = stmt.where(RenovaCase.archived == (False if archived is None else archived))
         if status is not None:
             stmt = stmt.where(RenovaCase.status == status)
         if assigned_user_id is not None:

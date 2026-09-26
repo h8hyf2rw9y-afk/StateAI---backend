@@ -46,6 +46,7 @@ def list_renova_cases(
     q: str | None = Query(None, max_length=100, description="Matches the owner's name or phone."),
     status_: RenovaCaseStatus | None = Query(None, alias="status"),
     assigned_user_id: uuid.UUID | None = Query(None),
+    archived: bool | None = Query(None, description="Omitted -> only non-archived cases. true -> only archived ones."),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     current_user: CurrentUser = Depends(get_current_org_user),
@@ -57,6 +58,7 @@ def list_renova_cases(
         q=q,
         status_=status_,
         assigned_user_id=assigned_user_id,
+        archived=archived,
         limit=limit,
         offset=offset,
     )
