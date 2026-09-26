@@ -25,6 +25,7 @@ from app.models.appointment import Appointment  # noqa: F401
 from app.models.calendar_connection import CalendarConnection  # noqa: F401
 from app.models.notification import Notification  # noqa: F401
 from app.models.renova_case import RenovaCase  # noqa: F401
+from app.models.renova_chat import RenovaChatConversation, RenovaChatMessage  # noqa: F401
 
 __all__ = [
     "Base",
@@ -50,4 +51,6 @@ __all__ = [
     "CalendarConnection",
     "Notification",
     "RenovaCase",
+    "RenovaChatConversation",
+    "RenovaChatMessage",
 ]

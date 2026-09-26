@@ -345,7 +345,10 @@ def test_renova_table_has_no_foreign_key_to_any_traditional_crm_table():
 
 def test_no_traditional_crm_table_references_renova():
     for table in Base.metadata.tables.values():
-        if table.name == "renova_cases":
+        # Renova's own chat history may reference a case to preserve safe
+        # follow-up context. The invariant is that no *traditional CRM*
+        # table (contacts/properties/opportunities/etc.) references Renova.
+        if table.name == "renova_cases" or table.name.startswith("renova_chat_"):
             continue
         assert "renova_cases" not in {fk.column.table.name for fk in table.foreign_keys}
 

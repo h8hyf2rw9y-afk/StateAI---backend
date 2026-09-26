@@ -16,6 +16,7 @@ from app.api.routes import (
     properties,
     property_interests,
     renova,
+    renova_chat,
     tasks,
 )
 
@@ -38,3 +39,4 @@ api_router.include_router(appointments.router)
 api_router.include_router(calendar_connections.router)
 api_router.include_router(notifications.router)
 api_router.include_router(renova.router)
+api_router.include_router(renova_chat.router)
