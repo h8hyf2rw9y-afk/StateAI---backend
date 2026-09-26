@@ -2,6 +2,11 @@
 
 Última actualización: 25 de septiembre de 2026
 
+- **Inicio formal del proyecto:** 25 de septiembre de 2026.
+- **Línea base:** el trabajo construido antes de esta fecha se registra como entregado y sirve como punto de partida.
+- **Fecha límite de lanzamiento público:** 25 de noviembre de 2026.
+- **Ventana total:** 2 meses calendario.
+
 ## Visión
 
 STATEAI es un CRM AI-first para profesionales y equipos inmobiliarios. Centraliza contactos, propiedades, requisitos de compradores, oportunidades, actividades, tareas, citas y recomendaciones de IA.
@@ -45,7 +50,7 @@ Renova es un flujo de adquisición de vivienda separado del CRM tradicional. Com
 
 ## Método de trabajo
 
-Se usan sprints de dos semanas, de lunes a viernes.
+Se usan sprints de dos semanas, de lunes a viernes. El proyecto inicia formalmente el viernes 25 de septiembre con una fase corta de arranque y levantamiento de línea base; el primer sprint completo comienza el lunes 28.
 
 ### Ceremonias
 
@@ -86,6 +91,12 @@ Límites recomendados:
 
 ## Plan de sprints
 
+### Inicio y línea base — 25–27 sep 2026
+
+Objetivo: formalizar el arranque, inventariar lo ya construido, configurar el tablero, confirmar ambientes y priorizar el primer riesgo operativo. Las capacidades ya implementadas se conservan en `Done`; no se reinterpretan como trabajo realizado dentro del nuevo calendario.
+
+Hito de salida: backlog priorizado, flujo definido, documentación vigente y bug del 404 del Chat Renova listo para atender.
+
 ### Sprint 1 — Confiabilidad del Chat Renova
 28 sep–9 oct 2026
 
@@ -125,7 +136,28 @@ Candidatos:
 - Crear oportunidades desde Pipeline.
 - Selector de responsables cuando exista el endpoint de usuarios.
 
-### Roadmap posterior
+### Sprint 4 — Preparación para producción
+9–20 nov 2026
+
+Objetivo: convertir el producto funcional en un servicio público operable y seguro.
+
+Incluye:
+
+- Infraestructura y despliegue reproducible de producción.
+- Auditoría de seguridad, privacidad y aislamiento multi-tenant.
+- Observabilidad, alertas, respaldos y recuperación.
+- Onboarding, recuperación de acceso y estados de error accionables.
+- Pruebas E2E de los recorridos críticos y corrección de bloqueadores.
+
+### Ventana de estabilización y lanzamiento
+21–25 nov 2026
+
+- 21–24 nov: congelamiento funcional, regresión, smoke tests, documentación, soporte y decisión go/no-go.
+- **25 nov: lanzamiento público de STATEAI.**
+- Regla de salida: cero P0 abiertos; cualquier P1 restante debe tener mitigación y decisión explícita.
+- Las funcionalidades no indispensables que amenacen la fecha regresan al backlog posterior al lanzamiento.
+
+### Roadmap posterior al lanzamiento
 
 - Sales Copilot.
 - Detección temporal de actividades vencidas/próximas y productores de notificaciones.
@@ -159,3 +191,16 @@ Las acciones de IA no reciben acceso directo a SQL. El LLM propone una herramien
 - Calidad: bugs reabiertos y regresiones.
 - Salud: items bloqueados y edad del backlog.
 - Producto: consultas exitosas, ambigüedades y confirmaciones canceladas.
+- Lanzamiento: disponibilidad, tasa de errores, activación de usuarios y tiempo de recuperación.
+
+## Hitos ejecutivos
+
+| Hito | Fecha | Evidencia de salida |
+|---|---:|---|
+| Inicio formal y línea base | 25 sep 2026 | Tablero, documentación y backlog creados |
+| Chat Renova confiable | 9 oct 2026 | Regresiones aprobadas y 404 resuelto |
+| Primera acción segura desde IA | 23 oct 2026 | Confirmación, permisos y auditoría demostrados |
+| CRM operativo con datos reales | 6 nov 2026 | Flujos críticos sin mocks |
+| Producción lista | 20 nov 2026 | Seguridad, despliegue, observabilidad y onboarding aprobados |
+| Lanzamiento público | **25 nov 2026** | Acceso habilitado, smoke tests y monitoreo activos |
+
