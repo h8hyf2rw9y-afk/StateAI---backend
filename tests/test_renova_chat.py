@@ -85,6 +85,7 @@ def test_chat_answers_active_count_from_org_scoped_data(client, db_session, curr
         _case(current_user),
         _case(current_user, owner_name="María", status="accepted"),
         _case(current_user, owner_name="Pedro", status="purchased"),
+        _case(current_user, owner_name="Archivado", status="accepted", archived=True),
     ])
     other_org = Organization(name="Other")
     db_session.add(other_org)
@@ -101,6 +102,108 @@ def test_chat_answers_active_count_from_org_scoped_data(client, db_session, curr
 
     assert response.status_code == 200
     assert response.json()["assistant_message"]["content"] == "Tienes 2 leads activos en Renova."
+
+
+def test_chat_counts_and_lists_only_explicitly_archived_cases(
+    client, db_session, current_user
+):
+    db_session.add_all([
+        _case(
+            current_user,
+            owner_name="Ana Archivada",
+            status="rejected",
+            archived=True,
+            nss_encrypted="SECRET_NSS_TOKEN",
+            credit_number_encrypted="SECRET_CREDIT_TOKEN",
+            ine_front_encrypted="SECRET_INE_TOKEN",
+        ),
+        _case(
+            current_user,
+            owner_name="Beatriz Archivada",
+            status="cancelled",
+            archived=True,
+        ),
+        _case(
+            current_user,
+            owner_name="Roberto No Archivado",
+            status="rejected",
+            archived=False,
+        ),
+    ])
+    other_org = Organization(name="Other archived org")
+    db_session.add(other_org)
+    db_session.flush()
+    other_user = User(id=uuid.uuid4(), organization_id=other_org.id, role="agent")
+    db_session.add(other_user)
+    db_session.flush()
+    other_current_user = CurrentUser(
+        id=other_user.id,
+        email=None,
+        organization_id=other_org.id,
+        role="agent",
+        provider=None,
+    )
+    db_session.add(
+        _case(
+            other_current_user,
+            owner_name="Expediente Ajeno",
+            status="cancelled",
+            archived=True,
+        )
+    )
+    db_session.commit()
+
+    # These fallback outputs would be wrong. Explicit archive language must
+    # bypass the classifier and the follow-up must use conversation context.
+    fake = FakeChatLLM([
+        {"intent": "active_list", "owner_name": None},
+        {"intent": "help", "owner_name": None},
+    ])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+    conversation_id = _conversation(client)
+
+    count = _ask(client, conversation_id, "¿Tengo leads archivados?")
+    archived_list = _ask(client, conversation_id, "¿Cuáles son?")
+
+    assert count.status_code == 200
+    assert count.json()["assistant_message"]["content"] == (
+        "Tienes 2 expedientes archivados en Renova."
+    )
+    assert archived_list.status_code == 200
+    content = archived_list.json()["assistant_message"]["content"]
+    assert "Expedientes archivados (2)" in content
+    assert "Ana Archivada — Rechazado" in content
+    assert "Beatriz Archivada — Cancelado" in content
+    assert "Roberto No Archivado" not in content
+    assert "Expediente Ajeno" not in content
+    assert "SECRET_NSS_TOKEN" not in content
+    assert "SECRET_CREDIT_TOKEN" not in content
+    assert "SECRET_INE_TOKEN" not in content
+    assert fake.prompts == []
+
+
+def test_chat_reports_when_there_are_no_explicitly_archived_cases(
+    client, db_session, current_user
+):
+    db_session.add(
+        _case(
+            current_user,
+            owner_name="Rechazado sin archivar",
+            status="rejected",
+            archived=False,
+        )
+    )
+    db_session.commit()
+    fake = FakeChatLLM([])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+
+    response = _ask(client, _conversation(client), "Muéstrame los archivados")
+
+    assert response.status_code == 200
+    assert response.json()["assistant_message"]["content"] == (
+        "No tienes expedientes archivados en Renova."
+    )
+    assert fake.prompts == []
 
 
 def test_chat_reads_allowlisted_case_fields_and_keeps_case_context(client, db_session, current_user):

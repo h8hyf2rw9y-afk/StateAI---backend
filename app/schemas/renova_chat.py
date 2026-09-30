@@ -8,6 +8,8 @@ from app.schemas.common import ORMModel
 RenovaChatIntent = Literal[
     "active_count",
     "active_list",
+    "archived_count",
+    "archived_list",
     "pipeline_summary",
     "case_summary",
     "total_debt",

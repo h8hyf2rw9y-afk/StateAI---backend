@@ -73,6 +73,18 @@ class RenovaChatRepository:
         )
         return list(self.db.execute(stmt).scalars().all())
 
+    def last_assistant_intent(self, conversation_id: uuid.UUID) -> str | None:
+        stmt = (
+            select(RenovaChatMessage.intent)
+            .where(
+                RenovaChatMessage.conversation_id == conversation_id,
+                RenovaChatMessage.role == "assistant",
+            )
+            .order_by(RenovaChatMessage.sequence.desc())
+            .limit(1)
+        )
+        return self.db.scalar(stmt)
+
     def add_message(
         self,
         conversation_id: uuid.UUID,

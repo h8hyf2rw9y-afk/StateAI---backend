@@ -99,7 +99,11 @@ class RenovaChatService:
                 headers={"Retry-After": "60"},
             )
         safe_question = sanitize_question(question.content)
-        parsed = interpret_question(llm, safe_question)
+        parsed = interpret_question(
+            llm,
+            safe_question,
+            previous_intent=self.repo.last_assistant_intent(conversation.id),
+        )
         matched_case = self._resolve_case(current_user.organization_id, parsed, conversation)
         answer = self._answer(current_user.organization_id, parsed, matched_case)
 
@@ -191,6 +195,7 @@ class RenovaChatService:
         if parsed.intent == "help":
             return (
                 "Puedo consultar los leads activos de Renova, resumir el pipeline y buscar por propietario: "
+                "también puedo contar y listar expedientes archivados; "
                 "teléfono, dirección, etapa, fecha de ingreso, deuda registrada, valor de mercado, oferta final "
                 "y monto esperado. En esta versión no modifico expedientes."
             )
@@ -209,6 +214,7 @@ class RenovaChatService:
                 select(func.count()).select_from(RenovaCase).where(
                     RenovaCase.organization_id == organization_id,
                     RenovaCase.status.in_(ACTIVE_STATUSES),
+                    RenovaCase.archived.is_(False),
                 )
             ) or 0
             return f"Tienes {count} lead{'s' if count != 1 else ''} activo{'s' if count != 1 else ''} en Renova."
@@ -217,12 +223,14 @@ class RenovaChatService:
                 select(func.count()).select_from(RenovaCase).where(
                     RenovaCase.organization_id == organization_id,
                     RenovaCase.status.in_(ACTIVE_STATUSES),
+                    RenovaCase.archived.is_(False),
                 )
             ) or 0
             cases = list(self.db.execute(
                 select(RenovaCase).where(
                     RenovaCase.organization_id == organization_id,
                     RenovaCase.status.in_(ACTIVE_STATUSES),
+                    RenovaCase.archived.is_(False),
                 ).order_by(RenovaCase.entry_date.desc()).limit(20)
             ).scalars().all())
             if not cases:
@@ -230,6 +238,42 @@ class RenovaChatService:
             items = "; ".join(f"{c.owner_name} — {STATUS_LABELS.get(c.status, c.status)}" for c in cases)
             suffix = " Mostré los 20 más recientes." if total > 20 else ""
             return f"Leads activos ({total}): {items}.{suffix}"
+        if parsed.intent == "archived_count":
+            count = self.db.scalar(
+                select(func.count()).select_from(RenovaCase).where(
+                    RenovaCase.organization_id == organization_id,
+                    RenovaCase.archived.is_(True),
+                )
+            ) or 0
+            return (
+                f"Tienes {count} expediente{'s' if count != 1 else ''} "
+                f"archivado{'s' if count != 1 else ''} en Renova."
+            )
+        if parsed.intent == "archived_list":
+            archived_filter = (
+                RenovaCase.organization_id == organization_id,
+                RenovaCase.archived.is_(True),
+            )
+            total = self.db.scalar(
+                select(func.count()).select_from(RenovaCase).where(*archived_filter)
+            ) or 0
+            cases = list(
+                self.db.execute(
+                    select(RenovaCase)
+                    .where(*archived_filter)
+                    .order_by(RenovaCase.entry_date.desc())
+                    .limit(20)
+                ).scalars().all()
+            )
+            if not cases:
+                return "No tienes expedientes archivados en Renova."
+            items = "; ".join(
+                f"{archived_case.owner_name} — "
+                f"{STATUS_LABELS.get(archived_case.status, archived_case.status)}"
+                for archived_case in cases
+            )
+            suffix = " Mostré los 20 más recientes." if total > 20 else ""
+            return f"Expedientes archivados ({total}): {items}.{suffix}"
         if parsed.intent == "pipeline_summary":
             statuses = list(self.db.execute(
                 select(RenovaCase.status).where(RenovaCase.organization_id == organization_id)
