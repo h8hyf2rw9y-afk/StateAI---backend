@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import uuid
-from collections import Counter
 from decimal import Decimal
 
 from fastapi import HTTPException, status
@@ -25,6 +24,12 @@ ACTIVE_STATUSES = (
     "offer_sent",
     "negotiating",
     "accepted",
+)
+
+TERMINAL_STATUSES = (
+    "purchased",
+    "rejected",
+    "cancelled",
 )
 
 STATUS_LABELS = {
@@ -275,15 +280,50 @@ class RenovaChatService:
             suffix = " Mostré los 20 más recientes." if total > 20 else ""
             return f"Expedientes archivados ({total}): {items}.{suffix}"
         if parsed.intent == "pipeline_summary":
-            statuses = list(self.db.execute(
-                select(RenovaCase.status).where(RenovaCase.organization_id == organization_id)
-            ).scalars().all())
-            if not statuses:
-                return "Todavía no hay expedientes en el pipeline de Renova."
-            counts = Counter(statuses)
-            ordered = [key for key in STATUS_LABELS if counts[key]]
-            summary = "; ".join(f"{STATUS_LABELS[key]}: {counts[key]}" for key in ordered)
-            return f"Tu pipeline de Renova tiene {len(statuses)} expedientes. {summary}."
+            active_counts = dict(
+                self.db.execute(
+                    select(RenovaCase.status, func.count())
+                    .where(
+                        RenovaCase.organization_id == organization_id,
+                        RenovaCase.status.in_(ACTIVE_STATUSES),
+                        RenovaCase.archived.is_(False),
+                    )
+                    .group_by(RenovaCase.status)
+                ).all()
+            )
+            terminal_counts = dict(
+                self.db.execute(
+                    select(RenovaCase.status, func.count())
+                    .where(
+                        RenovaCase.organization_id == organization_id,
+                        RenovaCase.status.in_(TERMINAL_STATUSES),
+                    )
+                    .group_by(RenovaCase.status)
+                ).all()
+            )
+
+            active_total = sum(active_counts.values())
+            if active_total:
+                active_summary = "; ".join(
+                    f"{STATUS_LABELS[status_key]}: {active_counts[status_key]}"
+                    for status_key in ACTIVE_STATUSES
+                    if active_counts.get(status_key)
+                )
+                answer = (
+                    f"Tu pipeline activo de Renova tiene {active_total} "
+                    f"expediente{'s' if active_total != 1 else ''}. {active_summary}."
+                )
+            else:
+                answer = "No tienes expedientes activos en el pipeline de Renova."
+
+            terminal_summary = "; ".join(
+                f"{STATUS_LABELS[status_key]}: {terminal_counts[status_key]}"
+                for status_key in TERMINAL_STATUSES
+                if terminal_counts.get(status_key)
+            )
+            if terminal_summary:
+                answer += f" Fuera del pipeline activo: {terminal_summary}."
+            return answer
 
         assert case is not None
         name = case.owner_name

@@ -104,6 +104,87 @@ def test_chat_answers_active_count_from_org_scoped_data(client, db_session, curr
     assert response.json()["assistant_message"]["content"] == "Tienes 2 leads activos en Renova."
 
 
+def test_pipeline_summary_separates_active_and_terminal_statuses(
+    client, db_session, current_user
+):
+    db_session.add_all([
+        _case(current_user, owner_name="Nuevo", status="new"),
+        _case(current_user, owner_name="En revisión", status="reviewing"),
+        _case(current_user, owner_name="Preparando", status="offer_preparation"),
+        _case(current_user, owner_name="Comprado", status="purchased"),
+        _case(current_user, owner_name="Rechazado", status="rejected"),
+        _case(current_user, owner_name="Cancelado", status="cancelled"),
+        _case(current_user, owner_name="Borrador", status="draft"),
+        _case(
+            current_user,
+            owner_name="Activo archivado",
+            status="accepted",
+            archived=True,
+        ),
+    ])
+    other_org = Organization(name="Other pipeline org")
+    db_session.add(other_org)
+    db_session.flush()
+    other_user = User(id=uuid.uuid4(), organization_id=other_org.id, role="agent")
+    db_session.add(other_user)
+    db_session.flush()
+    other_current_user = CurrentUser(
+        id=other_user.id,
+        email=None,
+        organization_id=other_org.id,
+        role="agent",
+        provider=None,
+    )
+    db_session.add_all([
+        _case(other_current_user, owner_name="Nuevo ajeno", status="new"),
+        _case(other_current_user, owner_name="Rechazado ajeno", status="rejected"),
+    ])
+    db_session.commit()
+
+    fake = FakeChatLLM([{"intent": "pipeline_summary", "owner_name": None}])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+
+    response = _ask(client, _conversation(client), "Dame el resumen del pipeline")
+
+    assert response.status_code == 200
+    assert response.json()["assistant_message"]["content"] == (
+        "Tu pipeline activo de Renova tiene 3 expedientes. "
+        "Nuevo: 1; En revisión: 1; Preparación de oferta: 1. "
+        "Fuera del pipeline activo: Comprado: 1; Rechazado: 1; Cancelado: 1."
+    )
+
+
+def test_pipeline_summary_handles_empty_active_stages_and_ignores_drafts(
+    client, db_session, current_user
+):
+    db_session.add(_case(current_user, owner_name="Sólo borrador", status="draft"))
+    other_org = Organization(name="Other empty pipeline org")
+    db_session.add(other_org)
+    db_session.flush()
+    other_user = User(id=uuid.uuid4(), organization_id=other_org.id, role="agent")
+    db_session.add(other_user)
+    db_session.flush()
+    other_current_user = CurrentUser(
+        id=other_user.id,
+        email=None,
+        organization_id=other_org.id,
+        role="agent",
+        provider=None,
+    )
+    db_session.add(_case(other_current_user, owner_name="Activo ajeno", status="new"))
+    db_session.commit()
+
+    fake = FakeChatLLM([{"intent": "pipeline_summary", "owner_name": None}])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+
+    response = _ask(client, _conversation(client), "¿Cómo está mi pipeline?")
+
+    assert response.status_code == 200
+    assert response.json()["assistant_message"]["content"] == (
+        "No tienes expedientes activos en el pipeline de Renova."
+    )
+
+
 def test_chat_counts_and_lists_only_explicitly_archived_cases(
     client, db_session, current_user
 ):
