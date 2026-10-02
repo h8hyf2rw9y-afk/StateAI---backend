@@ -7,6 +7,7 @@ not just whichever model happened to be imported first.
 from app.models.base import Base  # noqa: F401
 from app.models.external import auth_users  # noqa: F401
 from app.models.organization import Organization, User  # noqa: F401
+from app.models.organization_invitation import OrganizationInvitation  # noqa: F401
 from app.models.contact import Contact, Role, ContactRole  # noqa: F401
 from app.models.feature import Feature  # noqa: F401
 from app.models.property import Property, PropertyFeature  # noqa: F401
@@ -32,6 +33,7 @@ __all__ = [
     "auth_users",
     "Organization",
     "User",
+    "OrganizationInvitation",
     "Contact",
     "Role",
     "ContactRole",

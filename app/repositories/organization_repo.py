@@ -37,6 +37,9 @@ class OrganizationRepository:
     def list_all(self) -> list[Organization]:
         return list(self.db.execute(select(Organization)).scalars().all())
 
+    def get(self, organization_id: uuid.UUID) -> Organization | None:
+        return self.db.get(Organization, organization_id)
+
 
 class UserRepository:
     """

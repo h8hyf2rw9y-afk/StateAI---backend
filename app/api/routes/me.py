@@ -5,8 +5,10 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import build_current_user, get_current_claims, get_current_org_user, get_current_user_id
+from app.schemas.organization_invitation import OrganizationInvitationAccept
 from app.schemas.user import CurrentUser, OrganizationCreate
 from app.services.onboarding_service import OnboardingService
+from app.services.organization_invitation_service import OrganizationInvitationService
 
 router = APIRouter(tags=["me"])
 
@@ -54,4 +56,22 @@ def provision_my_organization(
     """
     name = data.name or _default_organization_name(claims)
     user = OnboardingService(db).provision(user_id, name)
+    return build_current_user(claims, user)
+
+
+@router.post("/me/organization/join", response_model=CurrentUser)
+def join_organization(
+    data: OrganizationInvitationAccept,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    claims: dict = Depends(get_current_claims),
+    db: Session = Depends(get_db),
+) -> CurrentUser:
+    """
+    The invited-teammate counterpart to POST /me/organization: joins the
+    EXISTING organization an owner/admin invited this email into (see
+    app/services/organization_invitation_service.py), instead of creating a
+    new one. Same unprovisioned-session shape as the route above — depends
+    on get_current_user_id/get_current_claims, not get_current_org_user.
+    """
+    user = OrganizationInvitationService(db).accept(user_id, claims, data)
     return build_current_user(claims, user)

@@ -15,6 +15,12 @@ from typing import Literal
 USER_ROLES: tuple[str, ...] = ("owner", "admin", "agent")
 UserRole = Literal["owner", "admin", "agent"]
 
+# app/models/organization_invitation.py — "pending" until used or revoked;
+# "accepted"/"revoked" are terminal (a new invitation is created instead of
+# reusing a dead one).
+ORGANIZATION_INVITATION_STATUSES: tuple[str, ...] = ("pending", "accepted", "revoked")
+OrganizationInvitationStatus = Literal["pending", "accepted", "revoked"]
+
 CONTACT_SOURCES: tuple[str, ...] = (
     "inmuebles24",
     "lamudi",

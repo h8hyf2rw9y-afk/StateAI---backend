@@ -13,6 +13,7 @@ from app.api.routes import (
     me,
     notifications,
     opportunities,
+    organization,
     properties,
     property_interests,
     renova,
@@ -24,6 +25,7 @@ from app.api.routes import (
 # unversioned, since uptime checks/load balancers shouldn't care about API versioning.
 api_router = APIRouter()
 api_router.include_router(me.router)
+api_router.include_router(organization.router)
 api_router.include_router(contacts.router)
 api_router.include_router(properties.router)
 api_router.include_router(buyer_requirements.router)

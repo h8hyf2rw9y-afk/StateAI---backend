@@ -2,6 +2,7 @@ import uuid
 
 from pydantic import BaseModel
 
+from app.schemas.common import ORMModel
 from app.schemas.enums import UserRole
 
 
@@ -28,3 +29,10 @@ class OrganizationCreate(BaseModel):
     """
 
     name: str | None = None
+
+
+class OrganizationRead(ORMModel):
+    """GET /organization — just enough for the Settings page to show the real organization name (CurrentUser itself only carries organization_id, not its name, to keep get_current_org_user's per-request lookup a single-row fetch)."""
+
+    id: uuid.UUID
+    name: str
