@@ -4,7 +4,8 @@ import uuid
 import base64
 import binascii
 import re
-from typing import Any
+from contextlib import contextmanager
+from typing import Any, Iterator
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
@@ -72,6 +73,22 @@ class RenovaCaseService:
         self.user_repo = UserRepository(db)
         self.audit = AuditService(db)
 
+    @staticmethod
+    @contextmanager
+    def _translate_crypto_errors() -> Iterator[None]:
+        """Wraps an encrypt_secret/reveal_secret call so every caller reports the same two failure modes the same way, instead of repeating the try/except at each call site."""
+        try:
+            yield
+        except EncryptionNotConfiguredError:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE, "Sensitive-field encryption is not configured."
+            ) from None
+        except SecretDecryptionError:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "The stored protected data can't be decrypted with the configured key.",
+            ) from None
+
     # --- reads -------------------------------------------------------------
 
     def list(
@@ -138,20 +155,11 @@ class RenovaCaseService:
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN, "You are not allowed to view this case's protected data."
             )
-        try:
+        with self._translate_crypto_errors():
             data = RenovaSensitiveData(
                 nss=reveal_secret(case.nss_encrypted) if case.nss_encrypted else None,
                 credit_number=reveal_secret(case.credit_number_encrypted) if case.credit_number_encrypted else None,
             )
-        except EncryptionNotConfiguredError:
-            raise HTTPException(
-                status.HTTP_503_SERVICE_UNAVAILABLE, "Sensitive-field encryption is not configured."
-            ) from None
-        except SecretDecryptionError:
-            raise HTTPException(
-                status.HTTP_409_CONFLICT,
-                "The stored protected data can't be decrypted with the configured key.",
-            ) from None
         self.audit.record(
             organization_id=current_user.organization_id,
             actor_user_id=current_user.id,
@@ -171,12 +179,8 @@ class RenovaCaseService:
     def get_ine_image(self, current_user: CurrentUser, case_id: uuid.UUID, side: str) -> str | None:
         case = self._protected_case(current_user, case_id)
         token = getattr(case, _INE_COLUMNS[side])
-        try:
+        with self._translate_crypto_errors():
             image = reveal_secret(token) if token else None
-        except EncryptionNotConfiguredError:
-            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Sensitive-field encryption is not configured.") from None
-        except SecretDecryptionError:
-            raise HTTPException(status.HTTP_409_CONFLICT, "The stored protected data can't be decrypted with the configured key.") from None
         self.audit.record(organization_id=current_user.organization_id, actor_user_id=current_user.id,
                           entity_type=_ENTITY_TYPE, entity_id=case.id, action="RENOVA_INE_VIEWED")
         self.db.commit()
@@ -195,10 +199,8 @@ class RenovaCaseService:
                       "webp": raw.startswith(b"RIFF") and raw[8:12] == b"WEBP"}
         if not raw or len(raw) > _MAX_INE_BYTES or not signatures[match.group(1)]:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Use a JPEG, PNG or WebP image smaller than 2 MB.")
-        try:
+        with self._translate_crypto_errors():
             setattr(case, _INE_COLUMNS[side], encrypt_secret(image))
-        except EncryptionNotConfiguredError:
-            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Sensitive-field encryption is not configured.") from None
         self.audit.record(organization_id=current_user.organization_id, actor_user_id=current_user.id,
                           entity_type=_ENTITY_TYPE, entity_id=case.id, action="RENOVA_INE_UPDATED")
         self.db.commit()
@@ -310,13 +312,9 @@ class RenovaCaseService:
             if secret is None:
                 out[column] = None
                 continue
-            try:
+            # Static message on purpose; the value is never stored unencrypted.
+            with self._translate_crypto_errors():
                 out[column] = encrypt_secret(secret.get_secret_value())
-            except EncryptionNotConfiguredError:
-                # Static message on purpose; the value is never stored unencrypted.
-                raise HTTPException(
-                    status.HTTP_503_SERVICE_UNAVAILABLE, "Sensitive-field encryption is not configured."
-                ) from None
         return out
 
     def _audit_snapshot(self, case: RenovaCase) -> dict:

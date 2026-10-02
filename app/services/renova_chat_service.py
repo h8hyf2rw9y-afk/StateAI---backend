@@ -215,70 +215,26 @@ class RenovaChatService:
                 "expedientes y del pipeline de Renova; no creo, edito ni elimino datos."
             )
         if parsed.intent == "active_count":
-            count = self.db.scalar(
-                select(func.count()).select_from(RenovaCase).where(
-                    RenovaCase.organization_id == organization_id,
-                    RenovaCase.status.in_(ACTIVE_STATUSES),
-                    RenovaCase.archived.is_(False),
-                )
-            ) or 0
+            count = self._count(*self._active_filter(organization_id))
             return f"Tienes {count} lead{'s' if count != 1 else ''} activo{'s' if count != 1 else ''} en Renova."
         if parsed.intent == "active_list":
-            total = self.db.scalar(
-                select(func.count()).select_from(RenovaCase).where(
-                    RenovaCase.organization_id == organization_id,
-                    RenovaCase.status.in_(ACTIVE_STATUSES),
-                    RenovaCase.archived.is_(False),
-                )
-            ) or 0
-            cases = list(self.db.execute(
-                select(RenovaCase).where(
-                    RenovaCase.organization_id == organization_id,
-                    RenovaCase.status.in_(ACTIVE_STATUSES),
-                    RenovaCase.archived.is_(False),
-                ).order_by(RenovaCase.entry_date.desc()).limit(20)
-            ).scalars().all())
-            if not cases:
-                return "No tienes leads activos en Renova."
-            items = "; ".join(f"{c.owner_name} — {STATUS_LABELS.get(c.status, c.status)}" for c in cases)
-            suffix = " Mostré los 20 más recientes." if total > 20 else ""
-            return f"Leads activos ({total}): {items}.{suffix}"
+            return self._list_cases(
+                self._active_filter(organization_id),
+                label="Leads activos",
+                empty_message="No tienes leads activos en Renova.",
+            )
         if parsed.intent == "archived_count":
-            count = self.db.scalar(
-                select(func.count()).select_from(RenovaCase).where(
-                    RenovaCase.organization_id == organization_id,
-                    RenovaCase.archived.is_(True),
-                )
-            ) or 0
+            count = self._count(*self._archived_filter(organization_id))
             return (
                 f"Tienes {count} expediente{'s' if count != 1 else ''} "
                 f"archivado{'s' if count != 1 else ''} en Renova."
             )
         if parsed.intent == "archived_list":
-            archived_filter = (
-                RenovaCase.organization_id == organization_id,
-                RenovaCase.archived.is_(True),
+            return self._list_cases(
+                self._archived_filter(organization_id),
+                label="Expedientes archivados",
+                empty_message="No tienes expedientes archivados en Renova.",
             )
-            total = self.db.scalar(
-                select(func.count()).select_from(RenovaCase).where(*archived_filter)
-            ) or 0
-            cases = list(
-                self.db.execute(
-                    select(RenovaCase)
-                    .where(*archived_filter)
-                    .order_by(RenovaCase.entry_date.desc())
-                    .limit(20)
-                ).scalars().all()
-            )
-            if not cases:
-                return "No tienes expedientes archivados en Renova."
-            items = "; ".join(
-                f"{archived_case.owner_name} — "
-                f"{STATUS_LABELS.get(archived_case.status, archived_case.status)}"
-                for archived_case in cases
-            )
-            suffix = " Mostré los 20 más recientes." if total > 20 else ""
-            return f"Expedientes archivados ({total}): {items}.{suffix}"
         if parsed.intent == "pipeline_summary":
             active_counts = dict(
                 self.db.execute(
@@ -372,3 +328,32 @@ class RenovaChatService:
             f"valor de mercado {_money(case.market_value, case.currency)}; "
             f"propuesta final {_money(case.final_offer, case.currency)}."
         )
+
+    @staticmethod
+    def _active_filter(organization_id: uuid.UUID) -> tuple:
+        return (
+            RenovaCase.organization_id == organization_id,
+            RenovaCase.status.in_(ACTIVE_STATUSES),
+            RenovaCase.archived.is_(False),
+        )
+
+    @staticmethod
+    def _archived_filter(organization_id: uuid.UUID) -> tuple:
+        return (RenovaCase.organization_id == organization_id, RenovaCase.archived.is_(True))
+
+    def _count(self, *filters) -> int:
+        return self.db.scalar(select(func.count()).select_from(RenovaCase).where(*filters)) or 0
+
+    def _list_cases(self, filters: tuple, *, label: str, empty_message: str, limit: int = 20) -> str:
+        """Shared by active_list/archived_list: a total count plus up to `limit` of the newest matching cases."""
+        total = self._count(*filters)
+        cases = list(
+            self.db.execute(
+                select(RenovaCase).where(*filters).order_by(RenovaCase.entry_date.desc()).limit(limit)
+            ).scalars().all()
+        )
+        if not cases:
+            return empty_message
+        items = "; ".join(f"{c.owner_name} — {STATUS_LABELS.get(c.status, c.status)}" for c in cases)
+        suffix = f" Mostré los {limit} más recientes." if total > limit else ""
+        return f"{label} ({total}): {items}.{suffix}"
