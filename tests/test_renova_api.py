@@ -535,10 +535,11 @@ def test_invalid_occupancy_status_is_rejected(client: TestClient, current_user: 
     assert client.post(URL, json=payload(current_user.id, occupancy_status="squatters")).status_code == 422
 
 
-def test_list_items_do_not_carry_the_address(client: TestClient, current_user: CurrentUser):
+def test_list_items_carry_the_address(client: TestClient, current_user: CurrentUser):
+    """The Leads -> Renova table shows a "Dirección" column, so the lean list row must include it (unlike notes/spouse/deeds, which stay detail-only -- see test_list_returns_lean_rows_newest_entry_first)."""
     _create(client, current_user, street_address="Calle Secreta 9")
     row = client.get(URL).json()[0]
-    assert "street_address" not in row
+    assert row["street_address"] == "Calle Secreta 9"
 
 
 def test_draft_status_can_be_created_and_promoted_with_an_audited_status_change(

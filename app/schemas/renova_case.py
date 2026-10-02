@@ -317,6 +317,13 @@ class _RenovaCaseFields(ORMModel):
     archived: bool
     owner_name: str
     owner_phone: str
+    # Moved here (from RenovaCaseRead-only) so the Leads -> Renova table can
+    # show a "Dirección" column without a second request — a list row was
+    # deliberately address-less before this; that's no longer the design.
+    street_address: str | None
+    neighborhood: str | None
+    municipality: str | None
+    postal_code: str | None
     dwelling_type: str | None
     is_duplex: bool
     currency: str
@@ -363,10 +370,6 @@ class RenovaCaseRead(_RenovaCaseFields):
     marital_status: str | None
     spouse_name: str | None
     spouse_phone: str | None
-    street_address: str | None
-    neighborhood: str | None
-    municipality: str | None
-    postal_code: str | None
     occupancy_status: str | None
     floors: int | None
     bathrooms: Decimal | None
@@ -385,6 +388,21 @@ class RenovaCaseRead(_RenovaCaseFields):
     credit_number_masked: str | None = None
     has_nss: bool = False
     has_credit_number: bool = False
+
+
+class RenovaCaseBucketCounts(BaseModel):
+    """
+    GET /renova/cases/counts — one cheap grouped query, never the case rows
+    themselves, so the three Leads -> Renova tabs can show a count without
+    fetching (let alone filtering client-side) every case in an
+    organization that might have hundreds.
+    """
+
+    active: int
+    closed: int
+    rejected: int
+    cancelled: int
+    archived: int
 
 
 class RenovaPipelineCase(ORMModel):

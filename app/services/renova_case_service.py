@@ -20,9 +20,10 @@ from app.core.crypto import (
 from app.models.renova_case import RenovaCase
 from app.repositories.organization_repo import UserRepository
 from app.repositories.renova_case_repo import RenovaCaseRepository
-from app.schemas.enums import RENOVA_PIPELINE_STAGES
+from app.schemas.enums import RENOVA_CLOSED_STATUSES, RENOVA_PIPELINE_STAGES
 from app.schemas.renova_case import (
     FINANCIAL_FIELDS,
+    RenovaCaseBucketCounts,
     RenovaCaseCreate,
     RenovaCaseListItem,
     RenovaCaseRead,
@@ -99,6 +100,7 @@ class RenovaCaseService:
         status_: str | None = None,
         assigned_user_id: uuid.UUID | None = None,
         archived: bool | None = None,
+        bucket: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[RenovaCaseListItem]:
@@ -108,10 +110,15 @@ class RenovaCaseService:
             status=status_,
             assigned_user_id=assigned_user_id,
             archived=archived,
+            bucket=bucket,
             limit=limit,
             offset=offset,
         )
         return [RenovaCaseListItem.model_validate(c) for c in cases]
+
+    def counts(self, organization_id: uuid.UUID) -> RenovaCaseBucketCounts:
+        """One cheap grouped query for the three Leads -> Renova tabs' counters (see RenovaCaseBucketCounts)."""
+        return RenovaCaseBucketCounts(**self.repo.counts(organization_id))
 
     def pipeline(self, organization_id: uuid.UUID) -> RenovaPipelineResponse:
         """
@@ -241,7 +248,7 @@ class RenovaCaseService:
         provided = data.model_dump(exclude_unset=True)
         if "assigned_user_id" in provided:
             self._validate_assignee(organization_id, provided["assigned_user_id"])
-        if provided.get("archived") is True and provided.get("status", case.status) not in ("rejected", "cancelled"):
+        if provided.get("archived") is True and provided.get("status", case.status) not in RENOVA_CLOSED_STATUSES:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Only rejected or cancelled cases can be archived.")
 
         before_snapshot = self._audit_snapshot(case)
@@ -267,7 +274,7 @@ class RenovaCaseService:
         # flow; reopening it (moving status away from rejected/cancelled)
         # always clears the flag too, even if this request never sent
         # `archived` at all.
-        if case.status not in ("rejected", "cancelled") and case.archived:
+        if case.status not in RENOVA_CLOSED_STATUSES and case.archived:
             case.archived = False
         self.db.flush()
         self.db.refresh(case)

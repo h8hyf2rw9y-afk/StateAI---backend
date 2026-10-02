@@ -431,6 +431,17 @@ RENOVA_PIPELINE_STAGES: tuple[str, ...] = (
     "purchased",
 )
 
+# The Leads -> Renova table's three views (GET /renova/cases?bucket=...).
+# Distinct from RENOVA_PIPELINE_STAGES: the pipeline board is only ever the
+# six purchase-flow stages above; this groups ALL statuses into exactly
+# three buckets, so "purchased" (a closed, successful deal) stays in
+# "active" here — only "rejected"/"cancelled" (RENOVA_CLOSED_STATUSES) move
+# a case into "closed". A case's archived flag is independent of both: see
+# RenovaCase.archived's own docstring.
+RENOVA_CLOSED_STATUSES: tuple[str, ...] = ("rejected", "cancelled")
+RENOVA_CASE_BUCKETS: tuple[str, ...] = ("active", "closed", "archived")
+RenovaCaseBucket = Literal["active", "closed", "archived"]
+
 # Initially only WhatsApp is how cases arrive; the other values exist so
 # adding a channel later is a one-line change here (soft enum, no migration).
 RENOVA_SOURCES: tuple[str, ...] = ("whatsapp", "phone", "referral", "website", "other")

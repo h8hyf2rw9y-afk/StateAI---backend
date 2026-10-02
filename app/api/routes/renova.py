@@ -8,8 +8,9 @@ from app.ai.llm.errors import LLMConfigError, LLMInvalidOutputError, LLMProvider
 from app.ai.llm.factory import build_default_provider
 from app.core.database import get_db
 from app.core.security import get_current_org_user
-from app.schemas.enums import RenovaCaseStatus
+from app.schemas.enums import RenovaCaseBucket, RenovaCaseStatus
 from app.schemas.renova_case import (
+    RenovaCaseBucketCounts,
     RenovaCaseCreate,
     RenovaCaseListItem,
     RenovaCaseRead,
@@ -80,6 +81,9 @@ def list_renova_cases(
     status_: RenovaCaseStatus | None = Query(None, alias="status"),
     assigned_user_id: uuid.UUID | None = Query(None),
     archived: bool | None = Query(None, description="Omitted -> only non-archived cases. true -> only archived ones."),
+    bucket: RenovaCaseBucket | None = Query(
+        None, description="Additive Leads -> Renova tab filter: active, closed (rejected/cancelled), or archived. Overrides `archived` when given; omitted keeps today's `archived`-only behavior."
+    ),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     current_user: CurrentUser = Depends(get_current_org_user),
@@ -92,9 +96,21 @@ def list_renova_cases(
         status_=status_,
         assigned_user_id=assigned_user_id,
         archived=archived,
+        bucket=bucket,
         limit=limit,
         offset=offset,
     )
+
+
+# Registered before GET /{case_id} so FastAPI matches this literal path
+# segment first -- otherwise "counts" would be parsed as a case_id and 422.
+@router.get("/counts", response_model=RenovaCaseBucketCounts)
+def get_renova_case_counts(
+    current_user: CurrentUser = Depends(get_current_org_user),
+    db: Session = Depends(get_db),
+) -> RenovaCaseBucketCounts:
+    """Counters for the three Leads → Renova tabs, from one grouped query -- never the case rows themselves."""
+    return RenovaCaseService(db).counts(current_user.organization_id)
 
 
 @router.post("", response_model=RenovaCaseRead, status_code=status.HTTP_201_CREATED)
