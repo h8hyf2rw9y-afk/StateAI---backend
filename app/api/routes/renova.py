@@ -3,6 +3,9 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 
+from app.ai.llm.base import LLMProvider
+from app.ai.llm.errors import LLMConfigError, LLMInvalidOutputError, LLMProviderError, LLMTimeoutError
+from app.ai.llm.factory import build_default_provider
 from app.core.database import get_db
 from app.core.security import get_current_org_user
 from app.schemas.enums import RenovaCaseStatus
@@ -16,7 +19,9 @@ from app.schemas.renova_case import (
     RenovaIneImage,
 )
 from app.schemas.user import CurrentUser
+from app.schemas.renova_quick_notes import RenovaQuickNotesExtraction, RenovaQuickNotesRequest
 from app.services.renova_case_service import RenovaCaseService
+from app.services.renova_quick_notes_service import RenovaQuickNotesService
 
 # Renova is its own module: separate prefix, table, service and schemas from
 # /contacts and friends. There is intentionally NO delete route — a case that
@@ -30,6 +35,34 @@ router = APIRouter(prefix="/renova/cases", tags=["renova"])
 # records RENOVA_CASE_STATUS_CHANGED when `status` changes, so there is
 # nothing pipeline-specific to add there.
 pipeline_router = APIRouter(prefix="/renova", tags=["renova"])
+
+
+def get_renova_quick_notes_llm() -> LLMProvider:
+    try:
+        return build_default_provider()
+    except LLMConfigError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "El extractor de Quick Notes no está configurado.") from exc
+
+
+@pipeline_router.post("/quick-notes/extract", response_model=RenovaQuickNotesExtraction)
+def extract_renova_quick_notes(
+    data: RenovaQuickNotesRequest,
+    response: Response,
+    _current_user: CurrentUser = Depends(get_current_org_user),
+    llm: LLMProvider = Depends(get_renova_quick_notes_llm),
+) -> RenovaQuickNotesExtraction:
+    """Interpret a redacted call note. This route never receives or stores a full NSS, credit number or phone."""
+    try:
+        result = RenovaQuickNotesService(llm).extract(data.content)
+    except LLMTimeoutError as exc:
+        raise HTTPException(status.HTTP_504_GATEWAY_TIMEOUT, "Quick Notes tardó demasiado en responder.") from exc
+    except LLMInvalidOutputError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Quick Notes devolvió datos inesperados.") from exc
+    except LLMProviderError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Quick Notes no está disponible en este momento.") from exc
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return result
 
 
 @pipeline_router.get("/pipeline", response_model=RenovaPipelineResponse)
