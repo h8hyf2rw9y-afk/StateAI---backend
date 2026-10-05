@@ -1,13 +1,6 @@
-import re
-
 from app.ai.llm.base import LLMProvider
 from app.schemas.renova_quick_notes import RenovaQuickNotesExtraction
-
-
-# Defense in depth. The browser replaces labelled NSS/credit/phone values with
-# descriptive placeholders first; anything long that slips through becomes a
-# generic placeholder before a provider (local Ollama or Anthropic) can see it.
-_LONG_NUMBER_RE = re.compile(r"(?<!\d)(?:\d[\s()-]?){6,20}(?!\d)")
+from app.services.renova_extraction import redact_protected_numbers
 
 SYSTEM_PROMPT = """
 You extract structured fields from informal Spanish call notes for a Mexican real-estate acquisition form.
@@ -38,8 +31,8 @@ Output meaning: owner_name Ana López; dwelling_type house; is_duplex true; floo
 
 
 def sanitize_redacted_note(content: str) -> str:
-    """Guarantee that long numeric identifiers cannot reach the provider."""
-    return _LONG_NUMBER_RE.sub("[NUMERO_PROTEGIDO]", content)
+    """Guarantee that long numeric identifiers cannot reach the provider. See app/services/renova_extraction.py."""
+    return redact_protected_numbers(content, "[NUMERO_PROTEGIDO]")
 
 
 class RenovaQuickNotesService:

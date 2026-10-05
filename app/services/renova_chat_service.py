@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import uuid
-from decimal import Decimal
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
@@ -11,11 +10,28 @@ from app.ai.llm.base import LLMProvider
 from app.core.config import settings
 from app.models.renova_case import RenovaCase
 from app.models.renova_chat import RenovaChatConversation, RenovaChatMessage
+from app.renova_chat.fields import (
+    DWELLING_LABELS,
+    RENOVA_CASE_FIELD_RESOLVERS,
+    STATUS_LABELS,
+    format_money,
+    format_property_tax_debt,
+)
+from app.renova_chat.filters import build_filter_clause, describe_filter
 from app.renova_chat.interpreter import interpret_question, sanitize_question
 from app.repositories.renova_chat_repo import RenovaChatRepository
 from app.schemas.renova_case import DEBT_FIELDS, sum_debts
-from app.schemas.renova_chat import ParsedRenovaQuestion, RenovaChatQuestion
+from app.schemas.renova_chat import ParsedRenovaQuestion, RenovaChatQuestion, RenovaCaseFilter
 from app.schemas.user import CurrentUser
+
+# Intents resolved through RENOVA_CASE_FIELD_RESOLVERS (app/renova_chat/fields.py)
+# instead of their own bespoke branch -- the 7 pre-existing ones keep their
+# own intent name for backward compatibility, "case_field" is the new,
+# single mechanism for everything added in Read V2. Both paths call the
+# exact same resolver, so there is only one implementation per field.
+_FIXED_FIELD_INTENTS = {
+    "phone", "address", "status", "entry_date", "market_value", "final_offer", "expected_amount",
+}
 
 ACTIVE_STATUSES = (
     "new",
@@ -32,25 +48,9 @@ TERMINAL_STATUSES = (
     "cancelled",
 )
 
-STATUS_LABELS = {
-    "draft": "Borrador",
-    "new": "Nuevo",
-    "reviewing": "En revisión",
-    "offer_preparation": "Preparación de oferta",
-    "offer_sent": "Oferta enviada",
-    "negotiating": "Negociando",
-    "accepted": "Aceptado",
-    "purchased": "Comprado",
-    "rejected": "Rechazado",
-    "cancelled": "Cancelado",
-}
-
-
-def _money(value: Decimal | None, currency: str = "MXN") -> str:
-    if value is None:
-        return "No está registrado"
-    symbol = "$" if currency == "MXN" else f"{currency} "
-    return f"{symbol}{value:,.2f}"
+# STATUS_LABELS and money/property-tax formatting now live in
+# app/renova_chat/fields.py (imported above) -- the single source both the
+# fixed-field intents and the new "case_field" mechanism read from.
 
 
 def _escape_like(value: str) -> str:
@@ -152,7 +152,7 @@ class RenovaChatService:
     ) -> RenovaCase | None:
         case_intents = {
             "case_summary", "total_debt", "debt_breakdown", "phone", "address", "status",
-            "entry_date", "market_value", "final_offer", "expected_amount",
+            "entry_date", "market_value", "final_offer", "expected_amount", "case_field",
         }
         if parsed.intent not in case_intents:
             return None
@@ -199,10 +199,13 @@ class RenovaChatService:
     def _answer(self, organization_id: uuid.UUID, parsed: ParsedRenovaQuestion, case: RenovaCase | None) -> str:
         if parsed.intent == "help":
             return (
-                "Puedo consultar los leads activos de Renova, resumir el pipeline y buscar por propietario: "
-                "también puedo contar y listar expedientes archivados; "
-                "teléfono, dirección, etapa, fecha de ingreso, deuda registrada, valor de mercado, oferta final "
-                "y monto esperado. En esta versión no modifico expedientes."
+                "Puedo consultar los leads activos de Renova, resumir el pipeline, contar y listar expedientes "
+                "archivados, y buscar por propietario: teléfono, dirección, etapa, fecha de ingreso, tipo de "
+                "vivienda, dúplex, situación actual, plantas, baños, recámaras, condiciones, escrituras, motivo "
+                "de venta, situación general, notas, estado civil, cónyuge, origen del lead, valor de mercado, "
+                "oferta final, monto esperado y adeudos (predial, agua, luz, gas, otros). También puedo contar o "
+                "listar leads por estado, municipio, dúplex, escrituras o adeudo registrado. "
+                "Por ahora no creo, edito ni elimino expedientes desde el chat."
             )
         if parsed.intent == "protected_data":
             return (
@@ -281,53 +284,124 @@ class RenovaChatService:
                 answer += f" Fuera del pipeline activo: {terminal_summary}."
             return answer
 
+        if parsed.intent in ("filtered_count", "filtered_list"):
+            return self._filtered_answer(organization_id, parsed)
+
         assert case is not None
         name = case.owner_name
-        if parsed.intent == "phone":
-            return f"El teléfono de {name} es {case.owner_phone}."
-        if parsed.intent == "address":
-            parts = [case.street_address, case.neighborhood, case.municipality, case.postal_code]
-            address = ", ".join(part for part in parts if part)
-            return f"La dirección registrada de {name} es {address}." if address else f"{name} no tiene una dirección registrada."
-        if parsed.intent == "status":
-            return f"{name} está en la etapa “{STATUS_LABELS.get(case.status, case.status)}” de Renova."
-        if parsed.intent == "entry_date":
-            return f"{name} ingresó a Renova el {case.entry_date.strftime('%d/%m/%Y')}."
+        if parsed.intent in _FIXED_FIELD_INTENTS:
+            return RENOVA_CASE_FIELD_RESOLVERS[parsed.intent](case)
+        if parsed.intent == "case_field":
+            if parsed.field is None:
+                return "No entendí qué dato de ese expediente quieres consultar. ¿Puedes reformular la pregunta?"
+            resolver = RENOVA_CASE_FIELD_RESOLVERS.get(parsed.field)
+            if resolver is None:
+                # Unreachable while RenovaReadableField stays a closed Literal
+                # matching RENOVA_CASE_FIELD_RESOLVERS's keys (see
+                # tests/test_renova_chat_fields.py) -- kept as a defensive,
+                # honest failure rather than silently answering nothing.
+                return "No entendí qué dato de ese expediente quieres consultar. ¿Puedes reformular la pregunta?"
+            return resolver(case)
         if parsed.intent == "total_debt":
             total = sum_debts([getattr(case, field) for field in DEBT_FIELDS])
             if total is None:
                 return f"{name} no tiene montos de adeudo registrados."
-            return f"La deuda total conocida de {name} es {_money(total, case.currency)}."
+            return f"La deuda total conocida de {name} es {format_money(total, case.currency)}."
         if parsed.intent == "debt_breakdown":
             labels = {
                 "property_tax_debt": "predial", "other_debt": "otros adeudos", "water_debt": "agua",
                 "electricity_debt": "luz", "gas_debt": "gas",
             }
-            captured = [f"{labels[field]}: {_money(getattr(case, field), case.currency)}" for field in DEBT_FIELDS if getattr(case, field) is not None]
+            # property_tax_debt is formatted through format_property_tax_debt
+            # specifically so a years-only figure is never shown as pesos.
+            captured = [
+                f"{labels[field]}: "
+                f"{format_property_tax_debt(case) if field == 'property_tax_debt' else format_money(getattr(case, field), case.currency)}"
+                for field in DEBT_FIELDS
+                if getattr(case, field) is not None
+            ]
             if not captured:
                 return f"{name} no tiene montos de adeudo registrados."
             total = sum_debts([getattr(case, field) for field in DEBT_FIELDS])
-            return f"Adeudos de {name}: {'; '.join(captured)}. Total conocido: {_money(total, case.currency)}."
-        if parsed.intent == "market_value":
-            return f"El valor de mercado registrado de {name} es {_money(case.market_value, case.currency)}."
-        if parsed.intent == "final_offer":
-            return f"La propuesta final registrada para {name} es {_money(case.final_offer, case.currency)}."
-        if parsed.intent == "expected_amount":
-            return f"{name} espera recibir {_money(case.owner_expected_amount, case.currency)}."
+            return f"Adeudos de {name}: {'; '.join(captured)}. Total conocido: {format_money(total, case.currency)}."
         return self._case_summary(case)
 
     @staticmethod
     def _case_summary(case: RenovaCase) -> str:
-        total = sum_debts([getattr(case, field) for field in DEBT_FIELDS])
+        """
+        A concise advisor-facing summary: owner, status, contact,
+        property/location, known debts, expected amount and sale reason --
+        skipping anything not captured yet rather than padding the answer
+        with "No está registrado" for every absent field.
+        """
+        parts = [f"{case.owner_name}: etapa {STATUS_LABELS.get(case.status, case.status)}", f"teléfono {case.owner_phone}"]
+
         address = ", ".join(
             part for part in (case.street_address, case.neighborhood, case.municipality, case.postal_code) if part
-        ) or "No registrada"
-        return (
-            f"{case.owner_name}: etapa {STATUS_LABELS.get(case.status, case.status)}; "
-            f"teléfono {case.owner_phone}; dirección {address}; deuda total conocida {_money(total, case.currency)}; "
-            f"valor de mercado {_money(case.market_value, case.currency)}; "
-            f"propuesta final {_money(case.final_offer, case.currency)}."
         )
+        if address:
+            parts.append(f"dirección {address}")
+
+        dwelling_bits = []
+        if case.dwelling_type:
+            dwelling_bits.append(DWELLING_LABELS.get(case.dwelling_type, case.dwelling_type))
+        if case.is_duplex:
+            dwelling_bits.append("dúplex")
+        if dwelling_bits:
+            parts.append(" ".join(dwelling_bits))
+
+        config_bits = []
+        if case.floors is not None:
+            config_bits.append(f"{case.floors} plantas")
+        if case.bedrooms is not None:
+            config_bits.append(f"{case.bedrooms} recámaras")
+        if case.bathrooms is not None:
+            config_bits.append(f"{case.bathrooms} baños")
+        if config_bits:
+            parts.append(", ".join(config_bits))
+
+        total = sum_debts([getattr(case, field) for field in DEBT_FIELDS])
+        if total is not None:
+            parts.append(f"deuda total conocida {format_money(total, case.currency)}")
+        if case.market_value is not None:
+            parts.append(f"valor de mercado {format_money(case.market_value, case.currency)}")
+        if case.final_offer is not None:
+            parts.append(f"propuesta final {format_money(case.final_offer, case.currency)}")
+        if case.owner_expected_amount is not None:
+            parts.append(f"espera recibir {format_money(case.owner_expected_amount, case.currency)}")
+        if case.sale_reason:
+            parts.append(f"motivo de venta: {case.sale_reason}")
+
+        return "; ".join(parts) + "."
+
+    def _filtered_answer(self, organization_id: uuid.UUID, parsed: ParsedRenovaQuestion) -> str:
+        if parsed.filter is None:
+            return "No entendí ese filtro. ¿Puedes reformular la pregunta?"
+        clause = build_filter_clause(parsed.filter)
+        if clause is None:
+            return "No entendí ese filtro. ¿Puedes reformular la pregunta?"
+
+        filters = (RenovaCase.organization_id == organization_id, RenovaCase.archived.is_(False), clause)
+        description = describe_filter(parsed.filter)
+
+        if parsed.intent == "filtered_count":
+            count = self._count(*filters)
+            return f"Tienes {count} lead{'s' if count != 1 else ''} {description}."
+
+        return self._list_filtered_cases(filters, description=description)
+
+    def _list_filtered_cases(self, filters: tuple, *, description: str, limit: int = 20) -> str:
+        total = self._count(*filters)
+        if total == 0:
+            return f"No tengo leads {description}."
+        cases = list(
+            self.db.execute(
+                select(RenovaCase).where(*filters).order_by(RenovaCase.entry_date.desc()).limit(limit)
+            ).scalars().all()
+        )
+        bullets = "\n".join(f"• {c.owner_name}" for c in cases)
+        suffix = f"\n\nMostré los {limit} más recientes." if total > limit else ""
+        return f"Hay {total} lead{'s' if total != 1 else ''} {description}:\n\n{bullets}{suffix}"
 
     @staticmethod
     def _active_filter(organization_id: uuid.UUID) -> tuple:

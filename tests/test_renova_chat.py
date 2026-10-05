@@ -378,3 +378,332 @@ def test_chat_rate_limits_repeated_llm_calls(client, monkeypatch):
     assert limited.status_code == 429
     assert limited.headers["Retry-After"] == "60"
     assert len(fake.prompts) == 1
+
+
+# --- Read V2: case_field + conversation context -------------------------------
+
+
+def test_case_field_resolves_new_fields_and_keeps_context_across_turns(client, db_session, current_user):
+    db_session.add(_case(
+        current_user, owner_name="Martha González", bedrooms=3, bathrooms=Decimal("2"),
+        dwelling_type="house", is_duplex=True, sale_reason="Ya no puede pagar la casa",
+    ))
+    db_session.commit()
+    fake = FakeChatLLM([
+        {"intent": "case_summary", "owner_name": "Martha González"},
+        {"intent": "case_field", "owner_name": None, "field": "bedrooms"},
+        {"intent": "case_field", "owner_name": None, "field": "bathrooms"},
+    ])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+    conversation_id = _conversation(client)
+
+    summary = _ask(client, conversation_id, "Resume a Martha González.")
+    bedrooms = _ask(client, conversation_id, "¿Cuántas recámaras tiene?")
+    bathrooms = _ask(client, conversation_id, "¿Y baños?")
+
+    assert "Martha González" in summary.json()["assistant_message"]["content"]
+    assert "3 recámaras" in bedrooms.json()["assistant_message"]["content"]
+    assert "2" in bathrooms.json()["assistant_message"]["content"] and "baños" in bathrooms.json()["assistant_message"]["content"]
+
+
+def test_case_field_covers_dwelling_duplex_deeds_and_notes_end_to_end(client, db_session, current_user):
+    db_session.add(_case(
+        current_user, owner_name="Pedro", dwelling_type="apartment", is_duplex=False,
+        has_deeds="no", notes="Llamó el martes por la tarde.",
+    ))
+    db_session.commit()
+    fake = FakeChatLLM([
+        {"intent": "case_field", "owner_name": "Pedro", "field": "dwelling_type"},
+        {"intent": "case_field", "owner_name": "Pedro", "field": "is_duplex"},
+        {"intent": "case_field", "owner_name": "Pedro", "field": "has_deeds"},
+        {"intent": "case_field", "owner_name": "Pedro", "field": "notes"},
+    ])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+    conversation_id = _conversation(client)
+
+    dwelling = _ask(client, conversation_id, "¿Qué tipo de vivienda tiene Pedro?")
+    duplex = _ask(client, conversation_id, "¿La casa de Pedro es dúplex?")
+    deeds = _ask(client, conversation_id, "¿Tiene escrituras?")
+    notes = _ask(client, conversation_id, "¿Qué notas tengo de Pedro?")
+
+    assert "Departamento" in dwelling.json()["assistant_message"]["content"]
+    assert "no es dúplex" in duplex.json()["assistant_message"]["content"]
+    assert "No" in deeds.json()["assistant_message"]["content"]
+    assert "Llamó el martes por la tarde." in notes.json()["assistant_message"]["content"]
+
+
+def test_notes_contents_never_reach_the_llm_prompt(client, db_session, current_user):
+    db_session.add(_case(current_user, owner_name="Pedro", notes="DATO_PRIVADO_EN_NOTAS"))
+    db_session.commit()
+    fake = FakeChatLLM([{"intent": "case_field", "owner_name": "Pedro", "field": "notes"}])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+
+    response = _ask(client, _conversation(client), "¿Qué notas tengo de Pedro?")
+
+    assert "DATO_PRIVADO_EN_NOTAS" in response.json()["assistant_message"]["content"]
+    assert "DATO_PRIVADO_EN_NOTAS" not in "\n".join(fake.prompts[0])
+
+
+def test_case_field_with_no_name_and_no_context_asks_for_the_owner(client):
+    fake = FakeChatLLM([{"intent": "case_field", "owner_name": None, "field": "bedrooms"}])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+
+    response = _ask(client, _conversation(client), "¿Cuántas recámaras tiene?")
+
+    assert response.status_code == 400
+
+
+def test_case_field_with_a_null_field_gives_a_safe_message(client, db_session, current_user):
+    db_session.add(_case(current_user, owner_name="Pedro"))
+    db_session.commit()
+    fake = FakeChatLLM([{"intent": "case_field", "owner_name": "Pedro", "field": None}])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+
+    response = _ask(client, _conversation(client), "Cuéntame algo de Pedro.")
+
+    assert response.status_code == 200
+    assert "No entendí" in response.json()["assistant_message"]["content"]
+
+
+# --- Read V2: filtered_count / filtered_list ----------------------------------
+
+
+def test_filtered_count_and_list_by_status_share_the_same_filter(client, db_session, current_user):
+    db_session.add_all([
+        _case(current_user, owner_name="Raúl", status="negotiating"),
+        _case(current_user, owner_name="Martha", status="negotiating"),
+        _case(current_user, owner_name="Andrea", status="accepted"),
+    ])
+    db_session.commit()
+    status_filter = {"field": "status", "operator": "equals", "value": "negotiating"}
+    fake = FakeChatLLM([
+        {"intent": "filtered_count", "owner_name": None, "filter": status_filter},
+        {"intent": "filtered_list", "owner_name": None, "filter": status_filter},
+    ])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+    conversation_id = _conversation(client)
+
+    count = _ask(client, conversation_id, "¿Cuántos están negociando?")
+    listing = _ask(client, conversation_id, "¿Qué leads están negociando?")
+
+    assert count.json()["assistant_message"]["content"] == "Tienes 2 leads en Negociando."
+    content = listing.json()["assistant_message"]["content"]
+    assert "Hay 2 leads en Negociando" in content
+    assert "Raúl" in content and "Martha" in content and "Andrea" not in content
+
+
+def test_filtered_list_new_status(client, db_session, current_user):
+    db_session.add_all([
+        _case(current_user, owner_name="Carlos", status="new"),
+        _case(current_user, owner_name="Andrea", status="accepted"),
+    ])
+    db_session.commit()
+    fake = FakeChatLLM([{"intent": "filtered_list", "owner_name": None, "filter": {"field": "status", "operator": "equals", "value": "new"}}])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+
+    response = _ask(client, _conversation(client), "Enséñame los nuevos.")
+
+    content = response.json()["assistant_message"]["content"]
+    assert "Carlos" in content and "Andrea" not in content
+
+
+def test_filtered_by_municipality(client, db_session, current_user):
+    db_session.add_all([
+        _case(current_user, owner_name="En Apodaca", municipality="Apodaca"),
+        _case(current_user, owner_name="En Monterrey", municipality="Monterrey"),
+    ])
+    db_session.commit()
+    fake = FakeChatLLM([{"intent": "filtered_list", "owner_name": None, "filter": {"field": "municipality", "operator": "equals", "value": "Apodaca"}}])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+
+    response = _ask(client, _conversation(client), "Enséñame los de Apodaca.")
+
+    content = response.json()["assistant_message"]["content"]
+    assert "En Apodaca" in content and "En Monterrey" not in content
+
+
+def test_filtered_by_duplex(client, db_session, current_user):
+    db_session.add_all([
+        _case(current_user, owner_name="Dúplex", is_duplex=True),
+        _case(current_user, owner_name="Normal", is_duplex=False),
+    ])
+    db_session.commit()
+    fake = FakeChatLLM([{"intent": "filtered_list", "owner_name": None, "filter": {"field": "is_duplex", "operator": "is_true"}}])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+
+    response = _ask(client, _conversation(client), "¿Quiénes tienen casa dúplex?")
+
+    content = response.json()["assistant_message"]["content"]
+    assert "Dúplex" in content and "Normal" not in content
+
+
+def test_filtered_by_has_deeds_and_lacks_deeds(client, db_session, current_user):
+    db_session.add_all([
+        _case(current_user, owner_name="Con escrituras", has_deeds="yes"),
+        _case(current_user, owner_name="Sin escrituras", has_deeds="no"),
+    ])
+    db_session.commit()
+    fake = FakeChatLLM([
+        {"intent": "filtered_list", "owner_name": None, "filter": {"field": "has_deeds", "operator": "equals", "value": "no"}},
+        {"intent": "filtered_list", "owner_name": None, "filter": {"field": "has_deeds", "operator": "equals", "value": "yes"}},
+    ])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+    conversation_id = _conversation(client)
+
+    lacks = _ask(client, conversation_id, "¿Quiénes no tienen escrituras?")
+    has = _ask(client, conversation_id, "¿Qué leads sí tienen escrituras?")
+
+    assert "Sin escrituras" in lacks.json()["assistant_message"]["content"]
+    assert "Con escrituras" in has.json()["assistant_message"]["content"]
+
+
+def test_filtered_by_property_tax_and_water_debt_existence(client, db_session, current_user):
+    # _case()'s own defaults carry non-null property_tax_debt/water_debt
+    # (used by other tests in this file), so every case below explicitly
+    # nulls whichever debts it should NOT have.
+    db_session.add_all([
+        _case(current_user, owner_name="Debe predial", property_tax_debt=Decimal("12000"), water_debt=None),
+        _case(current_user, owner_name="Debe agua", property_tax_debt=None, water_debt=Decimal("500")),
+        _case(current_user, owner_name="Sin adeudos", property_tax_debt=None, water_debt=None),
+    ])
+    db_session.commit()
+    fake = FakeChatLLM([
+        {"intent": "filtered_list", "owner_name": None, "filter": {"field": "has_property_tax_debt", "operator": "exists"}},
+        {"intent": "filtered_list", "owner_name": None, "filter": {"field": "has_water_debt", "operator": "exists"}},
+    ])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+    conversation_id = _conversation(client)
+
+    predial = _ask(client, conversation_id, "¿Quién debe predial?")
+    agua = _ask(client, conversation_id, "¿Qué clientes tienen adeudo de agua?")
+
+    assert "Debe predial" in predial.json()["assistant_message"]["content"]
+    assert "Debe agua" not in predial.json()["assistant_message"]["content"]
+    assert "Debe agua" in agua.json()["assistant_message"]["content"]
+
+
+def test_filtered_results_never_include_archived_cases(client, db_session, current_user):
+    db_session.add_all([
+        _case(current_user, owner_name="Activo", status="rejected"),
+        _case(current_user, owner_name="Archivado", status="rejected", archived=True),
+    ])
+    db_session.commit()
+    fake = FakeChatLLM([{"intent": "filtered_list", "owner_name": None, "filter": {"field": "status", "operator": "equals", "value": "rejected"}}])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+
+    response = _ask(client, _conversation(client), "¿Qué leads están rechazados?")
+
+    content = response.json()["assistant_message"]["content"]
+    assert "Activo" in content and "Archivado" not in content
+
+
+def test_filtered_list_states_when_it_truncates(client, db_session, current_user):
+    db_session.add_all([_case(current_user, owner_name=f"Lead {i}", status="new") for i in range(25)])
+    db_session.commit()
+    fake = FakeChatLLM([{"intent": "filtered_list", "owner_name": None, "filter": {"field": "status", "operator": "equals", "value": "new"}}])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+
+    response = _ask(client, _conversation(client), "Enséñame los nuevos.")
+
+    content = response.json()["assistant_message"]["content"]
+    assert content.startswith("Hay 25 leads en Nuevo")
+    assert "Mostré los 20 más recientes." in content
+
+
+def test_filtered_count_with_no_matches(client, db_session, current_user):
+    db_session.add(_case(current_user, owner_name="Único", status="new"))
+    db_session.commit()
+    fake = FakeChatLLM([{"intent": "filtered_count", "owner_name": None, "filter": {"field": "status", "operator": "equals", "value": "accepted"}}])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+
+    response = _ask(client, _conversation(client), "¿Cuántos están aceptados?")
+
+    assert response.json()["assistant_message"]["content"] == "Tienes 0 leads en Aceptado."
+
+
+def test_an_invalid_filter_combination_gives_a_safe_message_not_a_crash(client, db_session, current_user):
+    db_session.add(_case(current_user, owner_name="Pedro"))
+    db_session.commit()
+    # is_duplex never takes "equals" -- see app/renova_chat/filters.py's _VALID_OPERATORS_BY_FIELD.
+    fake = FakeChatLLM([{"intent": "filtered_list", "owner_name": None, "filter": {"field": "is_duplex", "operator": "equals", "value": "true"}}])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+
+    response = _ask(client, _conversation(client), "pregunta rara")
+
+    assert response.status_code == 200
+    assert "No entendí ese filtro" in response.json()["assistant_message"]["content"]
+
+
+def test_filtered_queries_are_organization_scoped(client, db_session, current_user):
+    db_session.add(_case(current_user, owner_name="Mío", status="negotiating"))
+    other_org = Organization(name="Other")
+    db_session.add(other_org)
+    db_session.flush()
+    other_user = User(id=uuid.uuid4(), organization_id=other_org.id, role="agent")
+    db_session.add(other_user)
+    db_session.flush()
+    db_session.add(_case(
+        CurrentUser(id=other_user.id, email=None, organization_id=other_org.id, role="agent", provider=None),
+        owner_name="Ajeno", status="negotiating",
+    ))
+    db_session.commit()
+    fake = FakeChatLLM([{"intent": "filtered_list", "owner_name": None, "filter": {"field": "status", "operator": "equals", "value": "negotiating"}}])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+
+    response = _ask(client, _conversation(client), "¿Qué leads están negociando?")
+
+    content = response.json()["assistant_message"]["content"]
+    assert "Mío" in content and "Ajeno" not in content
+
+
+# --- debt_breakdown / case_summary ---------------------------------------------
+
+
+def test_debt_breakdown_shows_property_tax_in_years_not_as_money(client, db_session, current_user):
+    """Regression: debt_breakdown used to format a years-only predial figure as if it were pesos."""
+    db_session.add(_case(
+        current_user, owner_name="Pedro", property_tax_debt=Decimal("4"), property_tax_debt_unit="years",
+        water_debt=Decimal("500"),
+    ))
+    db_session.commit()
+    fake = FakeChatLLM([{"intent": "debt_breakdown", "owner_name": "Pedro"}])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+
+    response = _ask(client, _conversation(client), "¿Cómo se desglosa la deuda de Pedro?")
+
+    content = response.json()["assistant_message"]["content"]
+    assert "predial: 4 años" in content
+    assert "$4" not in content
+
+
+def test_case_summary_includes_present_fields_and_skips_absent_ones(client, db_session, current_user):
+    db_session.add(_case(
+        current_user, owner_name="Pedro", dwelling_type="house", is_duplex=True, bedrooms=3,
+        sale_reason="Ya no puede pagar la casa", market_value=None, final_offer=None,
+        owner_expected_amount=None, other_debt=None, water_debt=None, electricity_debt=None, gas_debt=None,
+        property_tax_debt=None,
+    ))
+    db_session.commit()
+    fake = FakeChatLLM([{"intent": "case_summary", "owner_name": "Pedro"}])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+
+    response = _ask(client, _conversation(client), "¿Qué sabemos de Pedro?")
+
+    content = response.json()["assistant_message"]["content"]
+    assert "Casa dúplex" in content
+    assert "3 recámaras" in content
+    assert "Ya no puede pagar la casa" in content
+    assert "No está registrado" not in content
+    assert content.count("No registrad") == 0
+
+
+def test_help_describes_expanded_read_capabilities_and_still_denies_writes(client, db_session, current_user):
+    fake = FakeChatLLM([{"intent": "help", "owner_name": None}])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+
+    response = _ask(client, _conversation(client), "¿Qué puedes hacer?")
+
+    content = response.json()["assistant_message"]["content"]
+    assert "recámaras" in content
+    assert "escrituras" in content
+    assert "no creo, edito ni elimino" in content

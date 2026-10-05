@@ -3,8 +3,7 @@ import unicodedata
 
 from app.ai.llm.base import LLMProvider
 from app.schemas.renova_chat import ParsedRenovaQuestion
-
-_PROTECTED_NUMBER_RE = re.compile(r"(?<!\d)(?:\d[\s-]?){6,20}(?!\d)")
+from app.services.renova_extraction import redact_protected_numbers
 
 SYSTEM_PROMPT = """
 You classify short Spanish or English questions for a read-only real-estate CRM assistant.
@@ -16,7 +15,7 @@ Choose exactly one intent:
 - archived_count: how many Renova cases are explicitly marked as archived.
 - archived_list: list/show Renova cases explicitly marked as archived.
 - pipeline_summary: counts or overview of Renova pipeline stages.
-- case_summary: general information about one named owner/case.
+- case_summary: general information about one named owner/case ("resume a X", "qué sabemos de X").
 - total_debt: total known debt for one named owner/case.
 - debt_breakdown: debt amounts by category for one named owner/case.
 - phone: phone/cell number for one named owner. A generic "número de Juan" means phone.
@@ -26,13 +25,38 @@ Choose exactly one intent:
 - market_value: market value for one named owner.
 - final_offer: final offer for one named owner.
 - expected_amount: amount the owner expects to receive.
+- case_field: any OTHER single fact about one named owner/case. Set `field` to exactly one of:
+  dwelling_type, is_duplex, occupancy_status, floors, bathrooms, bedrooms, conditions, has_deeds,
+  deeds_holder_name, sale_reason, general_situation, notes, marital_status, spouse_name, source,
+  property_tax_debt, water_debt, electricity_debt, gas_debt, other_debt.
+  Examples: "¿cuántas recámaras tiene?" -> field bedrooms. "¿es dúplex?" -> field is_duplex.
+  "¿por qué quiere vender?" -> field sale_reason. "¿qué notas tengo?" -> field notes.
+  "¿tiene escrituras?" -> field has_deeds. "¿a nombre de quién están las escrituras?" -> field deeds_holder_name.
+  "¿está casado?" -> field marital_status. "¿cómo se llama su esposa?" -> field spouse_name.
+  "¿de dónde llegó?" -> field source. "¿cuánto debe de agua/luz/gas/predial?" -> field water_debt/electricity_debt/gas_debt/property_tax_debt.
+- filtered_count: how many cases match ONE condition (not "active"/"archived", which have their own intents above).
+- filtered_list: which cases match ONE condition.
+  For filtered_count/filtered_list set `filter` to exactly one {field, operator, value}:
+    field "status", operator "equals", value one of: draft, new, reviewing, offer_preparation, offer_sent,
+      negotiating, accepted, purchased, rejected, cancelled (map Spanish names: nuevo=new, en revisión=reviewing,
+      preparación de oferta=offer_preparation, oferta enviada=offer_sent, negociando=negotiating,
+      aceptado=accepted, comprado=purchased, rechazado=rejected, cancelado=cancelled).
+    field "municipality", operator "equals", value the place name as written (e.g. "Santa Catarina", "Apodaca").
+    field "is_duplex", operator "is_true" or "is_false" (no value needed).
+    field "has_deeds", operator "equals", value one of: yes, no, unknown (sí tienen escrituras=yes, no tienen=no).
+    field "has_property_tax_debt" / "has_water_debt" / "has_electricity_debt" / "has_gas_debt" / "has_other_debt",
+      operator "exists" (no value needed) -- for "quién debe predial/agua/luz/gas/otro adeudo".
+  Examples: "¿qué leads están negociando?" -> filtered_list, filter {field status, operator equals, value negotiating}.
+  "¿cuántos están negociando?" -> filtered_count, same filter. "¿quién debe predial?" -> filtered_list,
+  filter {field has_property_tax_debt, operator exists}.
 - protected_data: NSS, credit/account number, or INE request.
 - help: asks what the assistant can do.
 - unsupported: anything else, including writes, edits, deletion, reports, traditional CRM, or legal/financial advice.
 
-Set owner_name only when the user names a person. Preserve the written name, but remove filler words.
+Set owner_name only when the user names a person, and only for intents about ONE case (not filtered_count/filtered_list/active_*/archived_*/pipeline_summary, which are never about one named owner).
+Preserve the written name, but remove filler words.
 If the question uses "él", "ella", "esa persona", "su" or omits a name, leave owner_name null; the backend may use its safe current-case context.
-Never treat an NSS, credit number, account number or INE as a phone request.
+Never treat an NSS, credit number, account number or INE as a phone request, and never set `field` to anything about NSS, credit number or INE -- use protected_data instead.
 Archived means the explicit archived marker; do not infer it from rejected or cancelled status.
 """.strip()
 
@@ -75,8 +99,8 @@ def _deterministic_archived_intent(
 
 
 def sanitize_question(question: str) -> str:
-    """Keep pasted NSS/credit/phone-like digit strings out of the LLM and chat history."""
-    return _PROTECTED_NUMBER_RE.sub("[dato protegido]", question)
+    """Keep pasted NSS/credit/phone-like digit strings out of the LLM and chat history. See app/services/renova_extraction.py."""
+    return redact_protected_numbers(question, "[dato protegido]")
 
 
 def interpret_question(
@@ -89,5 +113,7 @@ def interpret_question(
         system_prompt=SYSTEM_PROMPT,
         user_prompt=question,
         response_model=ParsedRenovaQuestion,
-        max_tokens=160,
+        # Bumped from 160: the output schema grew a nested `filter` object
+        # and a `field` string; still small relative to any real case data.
+        max_tokens=220,
     )
