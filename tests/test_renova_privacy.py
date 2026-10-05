@@ -348,7 +348,11 @@ def test_no_traditional_crm_table_references_renova():
         # Renova's own chat history may reference a case to preserve safe
         # follow-up context. The invariant is that no *traditional CRM*
         # table (contacts/properties/opportunities/etc.) references Renova.
-        if table.name == "renova_cases" or table.name.startswith("renova_chat_"):
+        if (
+            table.name == "renova_cases"
+            or table.name.startswith("renova_chat_")
+            or table.name.startswith("renova_follow_up_")
+        ):
             continue
         assert "renova_cases" not in {fk.column.table.name for fk in table.foreign_keys}
 

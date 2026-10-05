@@ -15,6 +15,7 @@ from pydantic import (
 )
 
 from app.schemas.common import ORMModel
+from app.schemas.renova_follow_up import RenovaFollowUpSummary
 from app.schemas.enums import (
     RenovaCaseStatus,
     RenovaDeedsStatus,
@@ -429,6 +430,8 @@ class RenovaCaseListItem(_RenovaCaseFields):
     spouse, deeds, narrative and (of course) NSS / credit-number fields —
     not even masked: a listing never carries sensitive data.
     """
+
+    follow_up: RenovaFollowUpSummary = Field(default_factory=RenovaFollowUpSummary)
 
 
 class RenovaCaseRead(_RenovaCaseFields):

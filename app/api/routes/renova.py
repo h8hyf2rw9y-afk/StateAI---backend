@@ -21,7 +21,13 @@ from app.schemas.renova_case import (
 )
 from app.schemas.user import CurrentUser
 from app.schemas.renova_quick_notes import RenovaQuickNotesExtraction, RenovaQuickNotesRequest
+from app.schemas.renova_follow_up import (
+    RenovaFollowUpActivityCreate,
+    RenovaFollowUpActivityUpdate,
+    RenovaFollowUpDetail,
+)
 from app.services.renova_case_service import RenovaCaseService
+from app.services.renova_follow_up_service import RenovaFollowUpService
 from app.services.renova_quick_notes_service import RenovaQuickNotesService
 
 # Renova is its own module: separate prefix, table, service and schemas from
@@ -129,6 +135,38 @@ def get_renova_case(
     db: Session = Depends(get_db),
 ) -> RenovaCaseRead:
     return RenovaCaseService(db).get(current_user.organization_id, case_id)
+
+
+@router.get("/{case_id}/follow-up", response_model=RenovaFollowUpDetail)
+def get_renova_follow_up(
+    case_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_org_user),
+    db: Session = Depends(get_db),
+) -> RenovaFollowUpDetail:
+    return RenovaFollowUpService(db).detail(current_user.organization_id, case_id)
+
+
+@router.post("/{case_id}/follow-up", response_model=RenovaFollowUpDetail, status_code=status.HTTP_201_CREATED)
+def create_renova_follow_up(
+    case_id: uuid.UUID,
+    data: RenovaFollowUpActivityCreate,
+    current_user: CurrentUser = Depends(get_current_org_user),
+    db: Session = Depends(get_db),
+) -> RenovaFollowUpDetail:
+    return RenovaFollowUpService(db).create(
+        current_user.organization_id, case_id, data, actor_user_id=current_user.id
+    )
+
+
+@router.patch("/{case_id}/follow-up/{activity_id}", response_model=RenovaFollowUpDetail)
+def update_renova_follow_up(
+    case_id: uuid.UUID,
+    activity_id: uuid.UUID,
+    data: RenovaFollowUpActivityUpdate,
+    current_user: CurrentUser = Depends(get_current_org_user),
+    db: Session = Depends(get_db),
+) -> RenovaFollowUpDetail:
+    return RenovaFollowUpService(db).update(current_user.organization_id, case_id, activity_id, data)
 
 
 @router.get("/{case_id}/sensitive-data", response_model=RenovaSensitiveData)

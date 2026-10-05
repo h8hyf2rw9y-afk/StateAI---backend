@@ -36,6 +36,7 @@ from app.schemas.renova_case import (
 )
 from app.schemas.user import CurrentUser
 from app.services.audit_service import AuditService
+from app.services.renova_follow_up_service import RenovaFollowUpService
 
 _ENTITY_TYPE = "renova_case"
 
@@ -115,7 +116,13 @@ class RenovaCaseService:
             limit=limit,
             offset=offset,
         )
-        return [RenovaCaseListItem.model_validate(c) for c in cases]
+        summaries = RenovaFollowUpService(self.db).summaries_for_cases(
+            organization_id, [case.id for case in cases]
+        )
+        return [
+            RenovaCaseListItem.model_validate(case).model_copy(update={"follow_up": summaries[case.id]})
+            for case in cases
+        ]
 
     def counts(self, organization_id: uuid.UUID) -> RenovaCaseBucketCounts:
         """One cheap grouped query for the three Leads -> Renova tabs' counters (see RenovaCaseBucketCounts)."""
