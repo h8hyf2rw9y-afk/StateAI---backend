@@ -3,11 +3,22 @@ from __future__ import annotations
 import uuid
 from typing import Sequence
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 
 from app.models.renova_case import RenovaCase
 from app.repositories.base import OrgScopedRepository
-from app.schemas.enums import RENOVA_CLOSED_STATUSES
+from app.schemas.enums import RENOVA_CASE_STATUSES, RENOVA_CLOSED_STATUSES
+
+# Where each status sits in the real Renova flow, as a SQL CASE -- the same
+# order as RENOVA_CASE_STATUSES (app/schemas/enums.py), the single existing
+# definition of that order, reused rather than duplicated. An unknown status
+# (should never happen in practice; see has `else_`) sorts after every real
+# one instead of raising. Built once at import time: RENOVA_CASE_STATUSES is
+# a fixed tuple, not something that changes per request.
+_STATUS_RANK = case(
+    *((RenovaCase.status == status, rank) for rank, status in enumerate(RENOVA_CASE_STATUSES)),
+    else_=len(RENOVA_CASE_STATUSES),
+)
 
 
 def _escape_like(value: str) -> str:
@@ -58,8 +69,18 @@ class RenovaCaseRepository(OrgScopedRepository[RenovaCase]):
                     RenovaCase.owner_phone.ilike(pattern, escape="\\"),
                 )
             )
-        # Newest intake first; created_at breaks ties between cases logged the same day.
-        stmt = stmt.order_by(RenovaCase.entry_date.desc(), RenovaCase.created_at.desc()).limit(limit).offset(offset)
+        # Grouped by where each case sits in the Renova flow (not by entry
+        # date -- see _STATUS_RANK's docstring); newest-created first within
+        # the same status; `id` is the final, stable tiebreaker so two rows
+        # with the same status and the same created_at (same request, or a
+        # seed script) always come back in the same order across pages.
+        # Applied BEFORE limit/offset so pagination never splits a status
+        # group inconsistently across requests.
+        stmt = (
+            stmt.order_by(_STATUS_RANK.asc(), RenovaCase.created_at.desc(), RenovaCase.id.asc())
+            .limit(limit)
+            .offset(offset)
+        )
         return list(self.db.execute(stmt).scalars().all())
 
     def counts(self, organization_id: uuid.UUID) -> dict[str, int]:

@@ -7,6 +7,7 @@ contract, validation, advisor rules, filters and organization isolation.
 """
 
 import uuid
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import pytest
@@ -18,6 +19,7 @@ from app.core.security import get_current_org_user
 from app.main import app
 from app.models.audit_log import AuditLog
 from app.models.organization import Organization, User
+from app.models.renova_case import RenovaCase
 from app.schemas.user import CurrentUser
 
 URL = "/api/v1/renova/cases"
@@ -388,10 +390,34 @@ def test_a_patch_that_changes_nothing_writes_no_audit_row(
 # --- list, filters, search -----------------------------------------------------
 
 
-def test_list_returns_lean_rows_newest_entry_first(client: TestClient, current_user: CurrentUser):
-    _create(client, current_user, owner_name="Antigua", entry_date="2026-08-01")
-    _create(client, current_user, owner_name="Reciente", entry_date="2026-09-15")
-    _create(client, current_user, owner_name="Intermedia", entry_date="2026-09-01")
+def test_list_groups_by_status_then_newest_created_first(client: TestClient, current_user: CurrentUser, db_session: Session):
+    """
+    The default order is status_rank ASC (Renova flow order, see
+    RENOVA_CASE_STATUSES), then created_at DESC within the same status --
+    entry_date is NOT part of the sort at all. created_at is set explicitly
+    here (not via three rapid POSTs) because the test database's timestamp
+    resolution is coarser than real production Postgres and can't be
+    trusted to tell apart requests made in the same wall-clock second.
+    """
+    base = datetime(2026, 9, 20, 12, 0, 0, tzinfo=timezone.utc)
+    db_session.add_all([
+        RenovaCase(
+            organization_id=current_user.organization_id, assigned_user_id=current_user.id,
+            entry_date=date(2026, 8, 1), owner_name="Antigua", owner_phone="+52 81 0000 0000",
+            created_at=base,
+        ),
+        RenovaCase(
+            organization_id=current_user.organization_id, assigned_user_id=current_user.id,
+            entry_date=date(2026, 9, 1), owner_name="Intermedia", owner_phone="+52 81 0000 0000",
+            created_at=base.replace(hour=13),
+        ),
+        RenovaCase(
+            organization_id=current_user.organization_id, assigned_user_id=current_user.id,
+            entry_date=date(2026, 9, 15), owner_name="Reciente", owner_phone="+52 81 0000 0000",
+            created_at=base.replace(hour=14),
+        ),
+    ])
+    db_session.commit()
 
     rows = client.get(URL).json()
 
@@ -400,6 +426,61 @@ def test_list_returns_lean_rows_newest_entry_first(client: TestClient, current_u
     # The listing never carries the long narrative / spouse / deeds fields.
     for hidden in ("notes", "spouse_name", "spouse_phone", "conditions", "has_deeds", "sale_reason", "marital_status"):
         assert hidden not in rows[0]
+
+
+def test_list_groups_same_status_cases_together_in_renova_flow_order(
+    client: TestClient, current_user: CurrentUser, db_session: Session
+):
+    # created_at set explicitly (not via rapid POSTs) for the same reason
+    # as test_list_groups_by_status_then_newest_created_first above.
+    base = datetime(2026, 9, 20, 12, 0, 0, tzinfo=timezone.utc)
+
+    def _row(owner_name: str, status: str, hour: int) -> RenovaCase:
+        return RenovaCase(
+            organization_id=current_user.organization_id, assigned_user_id=current_user.id,
+            entry_date=date(2026, 9, 20), owner_name=owner_name, owner_phone="+52 81 0000 0000",
+            status=status, created_at=base.replace(hour=hour),
+        )
+
+    db_session.add_all([
+        _row("Nuevo", "new", 10),
+        _row("Negociando", "negotiating", 11),
+        _row("Aceptado", "accepted", 12),
+        _row("Otro nuevo", "new", 13),
+    ])
+    db_session.commit()
+
+    rows = client.get(URL).json()
+
+    # Both "new" cases sit together, ahead of "negotiating", ahead of
+    # "accepted" -- RENOVA_CASE_STATUSES' own order, not creation order.
+    assert [r["owner_name"] for r in rows] == ["Otro nuevo", "Nuevo", "Negociando", "Aceptado"]
+
+
+def test_list_id_breaks_ties_when_status_and_created_at_are_identical(
+    client: TestClient, current_user: CurrentUser, db_session: Session
+):
+    """A seed script (or anything else that writes the same created_at for several rows) still gets a stable, repeatable order."""
+    same_instant = datetime(2026, 9, 20, 12, 0, 0, tzinfo=timezone.utc)
+    cases = [
+        RenovaCase(
+            organization_id=current_user.organization_id,
+            assigned_user_id=current_user.id,
+            entry_date=date(2026, 9, 20),
+            owner_name=f"Simultáneo {i}",
+            owner_phone="+52 81 0000 0000",
+            created_at=same_instant,
+        )
+        for i in range(3)
+    ]
+    db_session.add_all(cases)
+    db_session.commit()
+    expected_order = [str(c.id) for c in sorted(cases, key=lambda c: c.id)]
+
+    first = [r["id"] for r in client.get(URL).json()]
+    second = [r["id"] for r in client.get(URL).json()]
+
+    assert first == second == expected_order
 
 
 def test_list_search_by_owner_name_or_phone(client: TestClient, current_user: CurrentUser):
@@ -451,6 +532,57 @@ def test_list_pagination(client: TestClient, current_user: CurrentUser):
     assert len(page) == 2
     assert client.get(URL, params={"limit": 0}).status_code == 422
     assert client.get(URL, params={"limit": 201}).status_code == 422
+
+
+def test_pagination_applies_after_the_status_order_not_before(client: TestClient, current_user: CurrentUser, db_session: Session):
+    """
+    The full order across these 4 cases is: Nuevo 2, Nuevo 1 (same status,
+    newest created_at first), Negociando, Aceptado. If limit/offset were
+    applied before sorting (or sorting ignored status), page 2 below would
+    not consistently be [Negociando, Aceptado]. created_at is set
+    explicitly for the same reason as the test above it.
+    """
+    base = datetime(2026, 9, 20, 12, 0, 0, tzinfo=timezone.utc)
+
+    def _row(owner_name: str, status: str, hour: int) -> RenovaCase:
+        return RenovaCase(
+            organization_id=current_user.organization_id, assigned_user_id=current_user.id,
+            entry_date=date(2026, 9, 20), owner_name=owner_name, owner_phone="+52 81 0000 0000",
+            status=status, created_at=base.replace(hour=hour),
+        )
+
+    db_session.add_all([
+        _row("Nuevo 1", "new", 10),
+        _row("Nuevo 2", "new", 11),
+        _row("Negociando", "negotiating", 12),
+        _row("Aceptado", "accepted", 13),
+    ])
+    db_session.commit()
+
+    page1 = client.get(URL, params={"limit": 2, "offset": 0}).json()
+    page2 = client.get(URL, params={"limit": 2, "offset": 2}).json()
+
+    assert [r["owner_name"] for r in page1] == ["Nuevo 2", "Nuevo 1"]
+    assert [r["owner_name"] for r in page2] == ["Negociando", "Aceptado"]
+
+
+def test_an_unknown_status_sorts_after_every_real_one(client: TestClient, current_user: CurrentUser, db_session: Session):
+    """Defensive: RENOVA_CASE_STATUSES is the only source of truth for rank, so a status outside it (should never happen) still sorts, last, rather than breaking the query."""
+    real = _create(client, current_user, owner_name="Cancelado", status="cancelled")
+    rogue = RenovaCase(
+        organization_id=current_user.organization_id,
+        assigned_user_id=current_user.id,
+        entry_date=date(2026, 9, 20),
+        owner_name="Estado desconocido",
+        owner_phone="+52 81 0000 0000",
+        status="some_future_status_not_in_the_enum",
+    )
+    db_session.add(rogue)
+    db_session.commit()
+
+    rows = client.get(URL).json()
+
+    assert [r["owner_name"] for r in rows] == ["Cancelado", "Estado desconocido"]
 
 
 # --- organization isolation ------------------------------------------------------
