@@ -17,6 +17,16 @@ Field meanings:
 - debt and amount fields: digits only as decimal strings, without currency symbols or separators.
 - property_tax_debt_unit: years only when the note states years; otherwise mxn.
 - sale_reason: why the owner wants or needs to sell.
+- proposal_type / debt_coverage_amount / owner_cash_offer: Renova's proposal has three distinct shapes.
+  * "debt_only": Renova only settles the owner's debt; no cash goes to the owner. Set debt_coverage_amount
+    to that debt figure and leave owner_cash_offer null. A note saying ONLY debt is covered ("solo cubrimos
+    la deuda/el crédito", "no se le entrega efectivo") is debt_only — NEVER invent a zero or any peso total
+    for it; it is a complete proposal exactly as described, not a missing one.
+  * "debt_plus_cash": Renova settles debt AND pays the owner cash directly ("le cubrimos X de deuda y le
+    damos/ofrecemos Y", "Y libres además de cubrir la deuda"). Set both amounts.
+  * "cash_only": Renova pays the owner cash with no debt settlement mentioned. Set owner_cash_offer only.
+  * If the note does not describe a proposal at all, leave proposal_type null — do not guess a type just
+    because some unrelated debt or money figure is mentioned elsewhere in the note.
 
 Protected placeholders such as [NSS_PROTEGIDO], [CREDITO_PROTEGIDO], [TELEFONO_PROTEGIDO]
 and [NUMERO_PROTEGIDO] identify omitted private values. Never copy a placeholder into an output field.
@@ -27,6 +37,12 @@ Output meaning: owner_name Pedro; street_address Cardo 2010; municipality Salina
 
 Input: "Ana López. Casa dúplex de 2 plantas, 3 recámaras y 1.5 baños en calle Río Pánuco 120, colonia Del Valle, municipio San Pedro."
 Output meaning: owner_name Ana López; dwelling_type house; is_duplex true; floors 2; bedrooms 3; bathrooms 1.5; street_address Río Pánuco 120; neighborhood Del Valle; municipality San Pedro.
+
+Input: "Le cubrimos 320 mil de deuda y le damos 140 mil."
+Output meaning: proposal_type debt_plus_cash; debt_coverage_amount 320000; owner_cash_offer 140000.
+
+Input: "La propuesta es únicamente liquidar los 320 mil de deuda. No se le entrega efectivo, solo se cubre el crédito."
+Output meaning: proposal_type debt_only; debt_coverage_amount 320000; owner_cash_offer null.
 """.strip()
 
 

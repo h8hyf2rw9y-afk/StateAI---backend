@@ -488,3 +488,18 @@ RenovaOccupancyStatus = Literal["lives_there", "vacant", "rented", "lent", "othe
 # _RenovaCaseFields.total_debt.
 RENOVA_PROPERTY_TAX_DEBT_UNITS: tuple[str, ...] = ("mxn", "years")
 RenovaPropertyTaxDebtUnit = Literal["mxn", "years"]
+
+# Renova's structured proposal model (RenovaCase.proposal_type):
+#   - "debt_only": Renova settles the owner's debt; the owner receives no
+#     additional cash. A valid, COMPLETE proposal on its own — never shown
+#     as "no proposal" just because the cash side is zero.
+#   - "debt_plus_cash": Renova settles the owner's debt AND pays the owner
+#     cash directly. Both debt_coverage_amount and owner_cash_offer must be
+#     positive.
+#   - "cash_only": Renova pays the owner cash directly, with no debt
+#     settlement involved.
+# NULL (not a member of this tuple) means a case predates this model, or
+# has no proposal yet — see RenovaCase.proposal_type's own docstring for
+# why that is never silently reclassified.
+RENOVA_PROPOSAL_TYPES: tuple[str, ...] = ("debt_only", "debt_plus_cash", "cash_only")
+RenovaProposalType = Literal["debt_only", "debt_plus_cash", "cash_only"]

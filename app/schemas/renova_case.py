@@ -21,6 +21,7 @@ from app.schemas.enums import (
     RenovaDwellingType,
     RenovaMaritalStatus,
     RenovaOccupancyStatus,
+    RenovaProposalType,
     RenovaPropertyTaxDebtUnit,
     RenovaSource,
 )
@@ -89,6 +90,9 @@ _REQUIRED_COLUMNS = (
 DEBT_FIELDS = ("property_tax_debt", "other_debt", "water_debt", "electricity_debt", "gas_debt")
 FINANCIAL_FIELDS = (
     "final_offer",
+    "proposal_type",
+    "debt_coverage_amount",
+    "owner_cash_offer",
     "market_value",
     *DEBT_FIELDS,
     "property_tax_debt_unit",
@@ -187,7 +191,44 @@ class _PropertyTaxDebtUnitMixin(BaseModel):
         return self
 
 
-class RenovaCaseBase(_PropertyTaxDebtUnitMixin, _BlankToNoneMixin):
+class _ProposalModalityMixin(BaseModel):
+    """
+    Renova's structured proposal (RenovaCase.proposal_type +
+    debt_coverage_amount + owner_cash_offer — see RENOVA_PROPOSAL_TYPES).
+    Only checked when `proposal_type` is present IN THIS SAME request,
+    using whichever of the two amounts are ALSO present here — same
+    partial-PATCH limitation as _PropertyTaxDebtUnitMixin above. The real
+    form always submits all three together, so this covers every
+    request that actually sets or changes a proposal.
+    """
+
+    @model_validator(mode="after")
+    def _valid_proposal_for_its_type(self):
+        proposal_type = getattr(self, "proposal_type", None)
+        if proposal_type is None:
+            return self
+        zero = Decimal("0")
+        coverage = getattr(self, "debt_coverage_amount", None)
+        cash = getattr(self, "owner_cash_offer", None)
+        if proposal_type == "debt_only":
+            if coverage is None or coverage <= zero:
+                raise ValueError("debt_only requires a positive debt_coverage_amount.")
+            if cash is not None and cash > zero:
+                raise ValueError("debt_only cannot include a positive owner_cash_offer.")
+        elif proposal_type == "debt_plus_cash":
+            if coverage is None or coverage <= zero:
+                raise ValueError("debt_plus_cash requires a positive debt_coverage_amount.")
+            if cash is None or cash <= zero:
+                raise ValueError("debt_plus_cash requires a positive owner_cash_offer.")
+        elif proposal_type == "cash_only":
+            if cash is None or cash <= zero:
+                raise ValueError("cash_only requires a positive owner_cash_offer.")
+            if coverage is not None and coverage > zero:
+                raise ValueError("cash_only cannot include a positive debt_coverage_amount.")
+        return self
+
+
+class RenovaCaseBase(_ProposalModalityMixin, _PropertyTaxDebtUnitMixin, _BlankToNoneMixin):
     # Registro
     assigned_user_id: uuid.UUID
     entry_date: date
@@ -221,7 +262,14 @@ class RenovaCaseBase(_PropertyTaxDebtUnitMixin, _BlankToNoneMixin):
     deeds_holder_name: Name | None = None
     # Finanzas
     currency: str = Field(default="MXN", pattern=r"^[A-Z]{3}$")
+    # Legacy total — see RenovaCase.final_offer's own docstring. Settable
+    # directly only for a case that stays unclassified (proposal_type
+    # null); once proposal_type is set, RenovaCaseService overwrites this
+    # with total_proposal_value regardless of what a request sends here.
     final_offer: Money | None = None
+    proposal_type: RenovaProposalType | None = None
+    debt_coverage_amount: Money | None = None
+    owner_cash_offer: Money | None = None
     market_value: Money | None = None
     property_tax_debt: Money | None = None
     property_tax_debt_unit: RenovaPropertyTaxDebtUnit = "mxn"
@@ -249,7 +297,7 @@ class RenovaCaseCreate(_SecretFormatMixin, RenovaCaseBase):
     credit_number: SecretIdentifier | None = None
 
 
-class RenovaCaseUpdate(_PropertyTaxDebtUnitMixin, _SecretFormatMixin, _BlankToNoneMixin):
+class RenovaCaseUpdate(_ProposalModalityMixin, _PropertyTaxDebtUnitMixin, _SecretFormatMixin, _BlankToNoneMixin):
     """
     All fields optional — PATCH semantics (see ContactUpdate). Sending
     `nss`/`credit_number` as null clears the stored value; omitting them
@@ -283,6 +331,9 @@ class RenovaCaseUpdate(_PropertyTaxDebtUnitMixin, _SecretFormatMixin, _BlankToNo
     deeds_holder_name: Name | None = None
     currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")
     final_offer: Money | None = None
+    proposal_type: RenovaProposalType | None = None
+    debt_coverage_amount: Money | None = None
+    owner_cash_offer: Money | None = None
     market_value: Money | None = None
     property_tax_debt: Money | None = None
     property_tax_debt_unit: RenovaPropertyTaxDebtUnit | None = None
@@ -328,6 +379,9 @@ class _RenovaCaseFields(ORMModel):
     is_duplex: bool
     currency: str
     final_offer: Decimal | None
+    proposal_type: str | None
+    debt_coverage_amount: Decimal | None
+    owner_cash_offer: Decimal | None
     market_value: Decimal | None
     property_tax_debt: Decimal | None
     property_tax_debt_unit: str
@@ -349,6 +403,24 @@ class _RenovaCaseFields(ORMModel):
         debts = [self.property_tax_debt if self.property_tax_debt_unit == "mxn" else None]
         debts += [getattr(self, f) for f in DEBT_FIELDS if f != "property_tax_debt"]
         return sum_debts(debts)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def total_proposal_value(self) -> Decimal | None:
+        """
+        debt_coverage_amount + owner_cash_offer, computed exactly once,
+        here — the ONLY place this is calculated; the frontend, the share
+        card and Renova Chat all display this value, never recompute it.
+        None (not zero) when NEITHER amount has been captured at all, so a
+        case that simply has no proposal yet never reads as "$0 proposal".
+        A proposal with a real $0 cash side (debt_only) still sums fine:
+        the amount that IS present is never treated as absent.
+        """
+        coverage = self.debt_coverage_amount
+        cash = self.owner_cash_offer
+        if coverage is None and cash is None:
+            return None
+        return (coverage or Decimal("0")) + (cash or Decimal("0"))
 
 
 class RenovaCaseListItem(_RenovaCaseFields):

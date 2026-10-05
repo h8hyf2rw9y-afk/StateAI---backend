@@ -75,6 +75,13 @@ RenovaReadableField = Literal[
     "electricity_debt",
     "gas_debt",
     "other_debt",
+    # Renova's structured proposal model (RENOVA_PROPOSAL_TYPES). "final_offer"
+    # above is the backward-compatible intent name for "what's the proposal";
+    # these three answer one specific part of it.
+    "proposal_type",
+    "debt_coverage_amount",
+    "owner_cash_offer",
+    "total_proposal_value",
 ]
 
 # One allow-listed cross-case filter (app/renova_chat/filters.py). Deliberately
@@ -91,6 +98,14 @@ RenovaFilterField = Literal[
     "has_electricity_debt",
     "has_gas_debt",
     "has_other_debt",
+    # Renova's structured proposal model. `value` is one of
+    # RENOVA_PROPOSAL_TYPES ("debt_only"/"debt_plus_cash"/"cash_only"), or
+    # the sentinel "unclassified" meaning proposal_type IS NULL — see
+    # app/renova_chat/filters.py's build_filter_clause for why that sentinel
+    # exists instead of a dedicated operator: it keeps RenovaFilterOperator
+    # itself small (V1 goal), and "unclassified" is never a column value a
+    # real proposal could have, so it can't collide with one.
+    "proposal_type",
 ]
 RenovaFilterOperator = Literal["equals", "is_true", "is_false", "exists"]
 

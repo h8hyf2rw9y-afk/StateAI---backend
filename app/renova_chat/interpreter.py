@@ -23,17 +23,25 @@ Choose exactly one intent:
 - status: current Renova pipeline status for one named owner.
 - entry_date: intake/registration date for one named owner.
 - market_value: market value for one named owner.
-- final_offer: final offer for one named owner.
-- expected_amount: amount the owner expects to receive.
+- final_offer: THE PROPOSAL for one named owner — what Renova is offering overall, in any shape
+  ("cuál es la propuesta", "qué le ofrecemos", "cuánto espera recibir y cuánto le estamos ofreciendo" --
+  compound questions mixing expectation and offer also go here, not to case_field).
+- expected_amount: amount the owner expects to receive (DIFFERENT from final_offer: this is what the
+  owner wants, not what Renova proposes).
 - case_field: any OTHER single fact about one named owner/case. Set `field` to exactly one of:
   dwelling_type, is_duplex, occupancy_status, floors, bathrooms, bedrooms, conditions, has_deeds,
   deeds_holder_name, sale_reason, general_situation, notes, marital_status, spouse_name, source,
-  property_tax_debt, water_debt, electricity_debt, gas_debt, other_debt.
+  property_tax_debt, water_debt, electricity_debt, gas_debt, other_debt,
+  proposal_type, debt_coverage_amount, owner_cash_offer, total_proposal_value.
   Examples: "¿cuántas recámaras tiene?" -> field bedrooms. "¿es dúplex?" -> field is_duplex.
   "¿por qué quiere vender?" -> field sale_reason. "¿qué notas tengo?" -> field notes.
   "¿tiene escrituras?" -> field has_deeds. "¿a nombre de quién están las escrituras?" -> field deeds_holder_name.
   "¿está casado?" -> field marital_status. "¿cómo se llama su esposa?" -> field spouse_name.
   "¿de dónde llegó?" -> field source. "¿cuánto debe de agua/luz/gas/predial?" -> field water_debt/electricity_debt/gas_debt/property_tax_debt.
+  "¿cuánto le damos directamente/en efectivo?" -> field owner_cash_offer.
+  "¿cuánto de su deuda vamos a cubrir?" -> field debt_coverage_amount.
+  "¿cuál es el valor total de la propuesta?" -> field total_proposal_value.
+  "¿la propuesta es únicamente cubrir la deuda?" -> field proposal_type.
 - filtered_count: how many cases match ONE condition (not "active"/"archived", which have their own intents above).
 - filtered_list: which cases match ONE condition.
   For filtered_count/filtered_list set `filter` to exactly one {field, operator, value}:
@@ -46,9 +54,14 @@ Choose exactly one intent:
     field "has_deeds", operator "equals", value one of: yes, no, unknown (sí tienen escrituras=yes, no tienen=no).
     field "has_property_tax_debt" / "has_water_debt" / "has_electricity_debt" / "has_gas_debt" / "has_other_debt",
       operator "exists" (no value needed) -- for "quién debe predial/agua/luz/gas/otro adeudo".
+    field "proposal_type", operator "equals", value one of: debt_only, debt_plus_cash, cash_only, or the
+      sentinel "unclassified" for a proposal that still needs classifying ("propuestas incompletas"/"sin clasificar").
+      "propuesta de solo deuda" = debt_only. "reciben dinero además de que cubrimos su deuda" = debt_plus_cash.
   Examples: "¿qué leads están negociando?" -> filtered_list, filter {field status, operator equals, value negotiating}.
   "¿cuántos están negociando?" -> filtered_count, same filter. "¿quién debe predial?" -> filtered_list,
-  filter {field has_property_tax_debt, operator exists}.
+  filter {field has_property_tax_debt, operator exists}. "¿qué clientes tienen propuesta de solo deuda?" ->
+  filtered_list, filter {field proposal_type, operator equals, value debt_only}. "¿qué propuestas están
+  incompletas?" -> filtered_list, filter {field proposal_type, operator equals, value unclassified}.
 - protected_data: NSS, credit/account number, or INE request.
 - help: asks what the assistant can do.
 - unsupported: anything else, including writes, edits, deletion, reports, traditional CRM, or legal/financial advice.

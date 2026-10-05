@@ -30,5 +30,13 @@ class RenovaQuickNotesExtraction(BaseModel):
     gas_debt: str | None = Field(default=None, pattern=r"^\d+(?:\.\d{1,2})?$")
     owner_expected_amount: str | None = Field(default=None, pattern=r"^\d+(?:\.\d{1,2})?$")
     market_value: str | None = Field(default=None, pattern=r"^\d+(?:\.\d{1,2})?$")
-    final_offer: str | None = Field(default=None, pattern=r"^\d+(?:\.\d{1,2})?$")
+    # Renova's structured proposal model (RENOVA_PROPOSAL_TYPES) — replaces
+    # a flat `final_offer` figure here on purpose: the model must say
+    # WHICH kind of proposal it heard, not guess a single ambiguous total.
+    # "Solo cubrimos la deuda" with no amount mentioned for the owner is
+    # proposal_type=debt_only with owner_cash_offer left null — never a
+    # zero-peso final offer (see the system prompt's own example).
+    proposal_type: Literal["debt_only", "debt_plus_cash", "cash_only"] | None = None
+    debt_coverage_amount: str | None = Field(default=None, pattern=r"^\d+(?:\.\d{1,2})?$")
+    owner_cash_offer: str | None = Field(default=None, pattern=r"^\d+(?:\.\d{1,2})?$")
     sale_reason: str | None = Field(default=None, max_length=5000)

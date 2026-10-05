@@ -58,7 +58,9 @@ LLM_EXTRACTABLE_RENOVA_FIELDS: frozenset[str] = frozenset({
     "gas_debt",
     "owner_expected_amount",
     "market_value",
-    "final_offer",
+    "proposal_type",
+    "debt_coverage_amount",
+    "owner_cash_offer",
     "sale_reason",
 })
 

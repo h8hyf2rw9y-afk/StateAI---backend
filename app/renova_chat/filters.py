@@ -18,8 +18,13 @@ from __future__ import annotations
 from sqlalchemy import ColumnElement
 
 from app.models.renova_case import RenovaCase
-from app.schemas.enums import RENOVA_CASE_STATUSES, RENOVA_DEEDS_STATUSES
+from app.schemas.enums import RENOVA_CASE_STATUSES, RENOVA_DEEDS_STATUSES, RENOVA_PROPOSAL_TYPES
 from app.schemas.renova_chat import RenovaCaseFilter
+
+# Never a real proposal_type value (see RENOVA_PROPOSAL_TYPES) — used as the
+# `value` for "proposal_type equals unclassified", meaning proposal_type IS
+# NULL. Keeps RenovaFilterOperator from needing its own is_null operator.
+_UNCLASSIFIED_PROPOSAL_SENTINEL = "unclassified"
 
 _VALID_OPERATORS_BY_FIELD: dict[str, tuple[str, ...]] = {
     "status": ("equals",),
@@ -31,6 +36,7 @@ _VALID_OPERATORS_BY_FIELD: dict[str, tuple[str, ...]] = {
     "has_electricity_debt": ("exists",),
     "has_gas_debt": ("exists",),
     "has_other_debt": ("exists",),
+    "proposal_type": ("equals",),
 }
 
 _DEBT_COLUMNS: dict[str, str] = {
@@ -66,6 +72,13 @@ def build_filter_clause(filter_: RenovaCaseFilter) -> ColumnElement[bool] | None
             return None
         return RenovaCase.has_deeds == filter_.value
 
+    if filter_.field == "proposal_type":
+        if filter_.value == _UNCLASSIFIED_PROPOSAL_SENTINEL:
+            return RenovaCase.proposal_type.is_(None)
+        if filter_.value not in RENOVA_PROPOSAL_TYPES:
+            return None
+        return RenovaCase.proposal_type == filter_.value
+
     column = getattr(RenovaCase, _DEBT_COLUMNS[filter_.field])
     return column.isnot(None)
 
@@ -84,6 +97,12 @@ def describe_filter(filter_: RenovaCaseFilter) -> str:
         from app.renova_chat.fields import DEEDS_LABELS
 
         return f"con escrituras: {DEEDS_LABELS.get(filter_.value or '', filter_.value)}"
+    if filter_.field == "proposal_type":
+        if filter_.value == _UNCLASSIFIED_PROPOSAL_SENTINEL:
+            return "con propuesta sin clasificar"
+        from app.renova_chat.fields import PROPOSAL_TYPE_LABELS
+
+        return f"con propuesta de tipo “{PROPOSAL_TYPE_LABELS.get(filter_.value or '', filter_.value)}”"
     labels = {
         "has_property_tax_debt": "con adeudo de predial",
         "has_water_debt": "con adeudo de agua",

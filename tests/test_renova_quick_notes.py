@@ -90,3 +90,55 @@ def test_quick_notes_response_schema_contains_no_protected_fields(client: TestCl
     assert "nss" not in schema
     assert "credit_number" not in schema
     assert "owner_phone" not in schema
+
+
+def test_quick_notes_extracts_a_debt_plus_cash_proposal(client: TestClient):
+    provider = FakeQuickNotesProvider(
+        RenovaQuickNotesExtraction(
+            owner_name="Pedro", proposal_type="debt_plus_cash",
+            debt_coverage_amount="320000", owner_cash_offer="140000",
+        )
+    )
+    app.dependency_overrides[get_renova_quick_notes_llm] = lambda: provider
+    try:
+        response = client.post(
+            "/api/v1/renova/quick-notes/extract",
+            json={"content": "Pedro. Le cubrimos 320 mil de deuda y le damos 140 mil."},
+        )
+    finally:
+        app.dependency_overrides.pop(get_renova_quick_notes_llm, None)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["proposal_type"] == "debt_plus_cash"
+    assert body["debt_coverage_amount"] == "320000"
+    assert body["owner_cash_offer"] == "140000"
+
+
+def test_quick_notes_extracts_a_debt_only_proposal_without_inventing_a_cash_amount(client: TestClient):
+    provider = FakeQuickNotesProvider(
+        RenovaQuickNotesExtraction(owner_name="Juan", proposal_type="debt_only", debt_coverage_amount="320000")
+    )
+    app.dependency_overrides[get_renova_quick_notes_llm] = lambda: provider
+    try:
+        response = client.post(
+            "/api/v1/renova/quick-notes/extract",
+            json={"content": "Juan. La propuesta es únicamente liquidar los 320 mil de deuda. No se le entrega efectivo."},
+        )
+    finally:
+        app.dependency_overrides.pop(get_renova_quick_notes_llm, None)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["proposal_type"] == "debt_only"
+    assert body["debt_coverage_amount"] == "320000"
+    assert body["owner_cash_offer"] is None
+
+
+def test_quick_notes_schema_has_no_final_offer_field_anymore(client: TestClient):
+    """final_offer is replaced by the structured proposal fields -- see app/services/renova_extraction.py."""
+    schema = client.get("/openapi.json").json()["components"]["schemas"]["RenovaQuickNotesExtraction"]["properties"]
+    assert "final_offer" not in schema
+    assert "proposal_type" in schema
+    assert "debt_coverage_amount" in schema
+    assert "owner_cash_offer" in schema

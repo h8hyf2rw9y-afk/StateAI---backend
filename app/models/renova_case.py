@@ -18,6 +18,8 @@ MONEY_COLUMNS = (
     "electricity_debt",
     "gas_debt",
     "owner_expected_amount",
+    "debt_coverage_amount",
+    "owner_cash_offer",
 )
 
 
@@ -118,7 +120,33 @@ class RenovaCase(Base, UUIDPKMixin, TimestampMixin):
 
     # --- Finanzas ---------------------------------------------------------
     currency: Mapped[str] = mapped_column(nullable=False, default="MXN", server_default="MXN")
+    # LEGACY total. Every case created before the structured proposal model
+    # below (proposal_type is NULL) has whatever ambiguous value was typed
+    # here — it is never silently reinterpreted as debt coverage or cash.
+    # Once a case HAS a proposal_type, RenovaCaseService keeps this column
+    # equal to total_proposal_value (debt_coverage_amount + owner_cash_offer)
+    # on every write, purely so existing readers of this one column (e.g.
+    # the Kanban board's aggregate KPIs) keep working without having to
+    # migrate to the new fields individually. The new fields — never this
+    # one — are the source of truth for a classified case.
     final_offer: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    # Soft enum: "debt_only" (Renova only settles the owner's debt),
+    # "debt_plus_cash" (settles debt AND pays the owner directly) or
+    # "cash_only" (pays the owner directly, no debt settlement) — see
+    # app/schemas/enums.py's RENOVA_PROPOSAL_TYPES. NULL means a case
+    # predates this model, or simply has no proposal yet; RenovaCaseService
+    # never infers one from `final_offer` — see the validation rules in
+    # app/schemas/renova_case.py for what each type requires.
+    proposal_type: Mapped[str | None] = mapped_column(nullable=True)
+    # How much of the owner's debt Renova proposes to cover — a DIFFERENT
+    # number from the owner's total known debt (DEBT_FIELDS/total_debt):
+    # the two may legitimately differ, and nothing here auto-reconciles
+    # them (see RenovaCaseRead's own note on the mismatch warning).
+    debt_coverage_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    # Cash paid directly to the owner, on top of (or instead of) debt
+    # coverage. Zero is a fully valid, meaningful value for a debt_only
+    # proposal — it is NEVER treated as "no proposal" (see total_proposal_value).
+    owner_cash_offer: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     market_value: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     property_tax_debt: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     # Soft enum: "mxn" (default, a real peso figure, counted in total_debt) or

@@ -707,3 +707,151 @@ def test_help_describes_expanded_read_capabilities_and_still_denies_writes(clien
     assert "recámaras" in content
     assert "escrituras" in content
     assert "no creo, edito ni elimino" in content
+
+
+# --- structured proposal model -------------------------------------------------
+
+
+def test_final_offer_intent_narrates_debt_plus_cash(client, db_session, current_user):
+    db_session.add(_case(
+        current_user, owner_name="Alma", final_offer=None,
+        proposal_type="debt_plus_cash", debt_coverage_amount=Decimal("320000"), owner_cash_offer=Decimal("140000"),
+    ))
+    db_session.commit()
+    fake = FakeChatLLM([{"intent": "final_offer", "owner_name": "Alma"}])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+
+    response = _ask(client, _conversation(client), "¿Cuál es la propuesta para Alma?")
+
+    content = response.json()["assistant_message"]["content"]
+    assert "cubrir $320,000.00 de deuda" in content
+    assert "entregarle $140,000.00 adicionales" in content
+    assert "$460,000.00" in content
+
+
+def test_final_offer_intent_narrates_debt_only_without_a_zero_peso_total(client, db_session, current_user):
+    db_session.add(_case(
+        current_user, owner_name="Juan", final_offer=None,
+        proposal_type="debt_only", debt_coverage_amount=Decimal("320000"), owner_cash_offer=None,
+    ))
+    db_session.commit()
+    fake = FakeChatLLM([{"intent": "final_offer", "owner_name": "Juan"}])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+
+    response = _ask(client, _conversation(client), "¿Cuál es la propuesta para Juan?")
+
+    content = response.json()["assistant_message"]["content"]
+    assert "únicamente en liquidar $320,000.00 de deuda" in content
+    assert "No contempla efectivo adicional" in content
+    assert "$0" not in content
+    assert "no tiene una propuesta" not in content.lower()
+
+
+def test_final_offer_intent_on_a_legacy_unclassified_case_says_pending_classification(client, db_session, current_user):
+    db_session.add(_case(current_user, owner_name="Legado", final_offer=Decimal("275000")))
+    db_session.commit()
+    fake = FakeChatLLM([{"intent": "final_offer", "owner_name": "Legado"}])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+
+    response = _ask(client, _conversation(client), "¿Cuál es la propuesta para Legado?")
+
+    content = response.json()["assistant_message"]["content"]
+    assert "$275,000.00" in content
+    assert "pendiente de" in content
+
+
+def test_case_field_answers_debt_coverage_cash_offer_and_total(client, db_session, current_user):
+    db_session.add(_case(
+        current_user, owner_name="Alma", final_offer=None,
+        proposal_type="debt_plus_cash", debt_coverage_amount=Decimal("320000"), owner_cash_offer=Decimal("140000"),
+    ))
+    db_session.commit()
+    fake = FakeChatLLM([
+        {"intent": "case_field", "owner_name": "Alma", "field": "debt_coverage_amount"},
+        {"intent": "case_field", "owner_name": None, "field": "owner_cash_offer"},
+        {"intent": "case_field", "owner_name": None, "field": "total_proposal_value"},
+        {"intent": "case_field", "owner_name": None, "field": "proposal_type"},
+    ])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+    conversation_id = _conversation(client)
+
+    coverage = _ask(client, conversation_id, "¿Cuánto de su deuda vamos a cubrir?")
+    cash = _ask(client, conversation_id, "¿Cuánto le damos directamente?")
+    total = _ask(client, conversation_id, "¿Cuál es el valor total de la propuesta?")
+    kind = _ask(client, conversation_id, "¿La propuesta es únicamente cubrir la deuda?")
+
+    assert "$320,000.00" in coverage.json()["assistant_message"]["content"]
+    assert "$140,000.00" in cash.json()["assistant_message"]["content"]
+    assert "$460,000.00" in total.json()["assistant_message"]["content"]
+    assert "Deuda más efectivo" in kind.json()["assistant_message"]["content"]
+
+
+def test_filtered_list_by_proposal_type_debt_only_and_debt_plus_cash(client, db_session, current_user):
+    db_session.add_all([
+        _case(current_user, owner_name="Solo deuda", final_offer=None, proposal_type="debt_only", debt_coverage_amount=Decimal("320000")),
+        _case(current_user, owner_name="Deuda y efectivo", final_offer=None, proposal_type="debt_plus_cash", debt_coverage_amount=Decimal("320000"), owner_cash_offer=Decimal("140000")),
+    ])
+    db_session.commit()
+    fake = FakeChatLLM([
+        {"intent": "filtered_list", "owner_name": None, "filter": {"field": "proposal_type", "operator": "equals", "value": "debt_only"}},
+        {"intent": "filtered_list", "owner_name": None, "filter": {"field": "proposal_type", "operator": "equals", "value": "debt_plus_cash"}},
+    ])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+    conversation_id = _conversation(client)
+
+    only_debt = _ask(client, conversation_id, "¿Qué clientes tienen propuesta de solo deuda?")
+    debt_and_cash = _ask(client, conversation_id, "¿Qué clientes reciben dinero además de que cubrimos su deuda?")
+
+    assert "Solo deuda" in only_debt.json()["assistant_message"]["content"]
+    assert "Deuda y efectivo" not in only_debt.json()["assistant_message"]["content"]
+    assert "Deuda y efectivo" in debt_and_cash.json()["assistant_message"]["content"]
+
+
+def test_filtered_list_by_unclassified_proposal(client, db_session, current_user):
+    db_session.add_all([
+        _case(current_user, owner_name="Sin clasificar", final_offer=Decimal("275000")),
+        _case(current_user, owner_name="Clasificado", final_offer=None, proposal_type="debt_only", debt_coverage_amount=Decimal("320000")),
+    ])
+    db_session.commit()
+    fake = FakeChatLLM([{"intent": "filtered_list", "owner_name": None, "filter": {"field": "proposal_type", "operator": "equals", "value": "unclassified"}}])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+
+    response = _ask(client, _conversation(client), "¿Qué propuestas todavía están incompletas?")
+
+    content = response.json()["assistant_message"]["content"]
+    assert "Sin clasificar" in content
+    assert "Clasificado" not in content
+
+
+def test_case_summary_includes_the_proposal_breakdown(client, db_session, current_user):
+    db_session.add(_case(
+        current_user, owner_name="Alma", final_offer=None,
+        proposal_type="debt_plus_cash", debt_coverage_amount=Decimal("320000"), owner_cash_offer=Decimal("140000"),
+    ))
+    db_session.commit()
+    fake = FakeChatLLM([{"intent": "case_summary", "owner_name": "Alma"}])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+
+    response = _ask(client, _conversation(client), "Resume a Alma.")
+
+    content = response.json()["assistant_message"]["content"]
+    assert "deuda que cubre Renova $320,000.00" in content
+    assert "efectivo para el propietario $140,000.00" in content
+    assert "valor total de la propuesta $460,000.00" in content
+
+
+def test_proposal_amounts_never_reach_the_llm_prompt(client, db_session, current_user):
+    db_session.add(_case(
+        current_user, owner_name="Alma", final_offer=None,
+        proposal_type="debt_plus_cash", debt_coverage_amount=Decimal("999999"), owner_cash_offer=Decimal("888888"),
+    ))
+    db_session.commit()
+    fake = FakeChatLLM([{"intent": "final_offer", "owner_name": "Alma"}])
+    client.app.dependency_overrides[get_renova_chat_llm] = lambda: fake
+
+    response = _ask(client, _conversation(client), "¿Cuál es la propuesta para Alma?")
+
+    assert response.status_code == 200
+    combined_prompt = "\n".join(fake.prompts[0])
+    assert "999999" not in combined_prompt
+    assert "888888" not in combined_prompt

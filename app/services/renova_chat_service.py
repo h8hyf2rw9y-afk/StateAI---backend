@@ -16,6 +16,7 @@ from app.renova_chat.fields import (
     STATUS_LABELS,
     format_money,
     format_property_tax_debt,
+    proposal_fragments,
 )
 from app.renova_chat.filters import build_filter_clause, describe_filter
 from app.renova_chat.interpreter import interpret_question, sanitize_question
@@ -365,8 +366,7 @@ class RenovaChatService:
             parts.append(f"deuda total conocida {format_money(total, case.currency)}")
         if case.market_value is not None:
             parts.append(f"valor de mercado {format_money(case.market_value, case.currency)}")
-        if case.final_offer is not None:
-            parts.append(f"propuesta final {format_money(case.final_offer, case.currency)}")
+        parts.extend(proposal_fragments(case))
         if case.owner_expected_amount is not None:
             parts.append(f"espera recibir {format_money(case.owner_expected_amount, case.currency)}")
         if case.sale_reason:

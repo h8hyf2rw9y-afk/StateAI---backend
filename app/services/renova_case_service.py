@@ -5,6 +5,7 @@ import base64
 import binascii
 import re
 from contextlib import contextmanager
+from decimal import Decimal
 from typing import Any, Iterator
 
 from fastapi import HTTPException, status
@@ -223,6 +224,7 @@ class RenovaCaseService:
             {"nss": data.nss, "credit_number": data.credit_number}, only_set={"nss", "credit_number"}
         )
         case = self.repo.create(organization_id, created_by_user_id=actor_user_id, **fields, **encrypted)
+        self._sync_legacy_final_offer(case)
         self.db.flush()
         self.db.refresh(case)
         self.audit.record(
@@ -276,6 +278,7 @@ class RenovaCaseService:
         # `archived` at all.
         if case.status not in RENOVA_CLOSED_STATUSES and case.archived:
             case.archived = False
+        self._sync_legacy_final_offer(case)
         self.db.flush()
         self.db.refresh(case)
 
@@ -303,6 +306,23 @@ class RenovaCaseService:
                 "has_credit_number": case.credit_number_encrypted is not None,
             }
         )
+
+    @staticmethod
+    def _sync_legacy_final_offer(case: RenovaCase) -> None:
+        """
+        Keeps the legacy `final_offer` column equal to total_proposal_value
+        (debt_coverage_amount + owner_cash_offer) once a case HAS a
+        classified proposal, so an existing reader of that one column
+        (e.g. the Kanban board's aggregate KPIs) keeps working without
+        migrating field-by-field. A case that stays unclassified
+        (proposal_type is None) keeps whatever `final_offer` it already
+        had — never touched here, never auto-split into the new fields.
+        """
+        if case.proposal_type is None:
+            return
+        coverage = case.debt_coverage_amount or Decimal("0")
+        cash = case.owner_cash_offer or Decimal("0")
+        case.final_offer = coverage + cash
 
     def _validate_assignee(self, organization_id: uuid.UUID, user_id: uuid.UUID) -> None:
         """Never trusts a client-supplied advisor id — it must be a user of THIS organization. 404 (not 403) so another org's user ids can't be probed."""
