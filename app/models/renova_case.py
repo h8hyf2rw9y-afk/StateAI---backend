@@ -1,8 +1,8 @@
 import uuid
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, Date, ForeignKey, Index, Numeric, SmallInteger, Text
+from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Index, Numeric, SmallInteger, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin, UUIDPKMixin
@@ -76,6 +76,16 @@ class RenovaCase(Base, UUIDPKMixin, TimestampMixin):
     # set this True unless status is "rejected"/"cancelled", and clears it
     # automatically if the case is ever reopened to another status.
     archived: Mapped[bool] = mapped_column(nullable=False, default=False, server_default="false")
+
+    # --- Operación posterior a la aceptación -----------------------------
+    # Kept independent from `status`: rejected/cancelled/archive continue to
+    # describe the lead record, while these nullable fields only exist once
+    # an accepted property enters the operational path through survey,
+    # notary, renovation, resale and final owner settlement.
+    operation_stage: Mapped[str | None] = mapped_column(nullable=True)
+    operation_next_action: Mapped[str | None] = mapped_column(Text, nullable=True)
+    operation_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    operation_stage_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # --- Propietario ------------------------------------------------------
     owner_name: Mapped[str] = mapped_column(nullable=False)
@@ -177,4 +187,5 @@ class RenovaCase(Base, UUIDPKMixin, TimestampMixin):
         Index("ix_renova_cases_org_status", "organization_id", "status"),
         Index("ix_renova_cases_org_assigned_user", "organization_id", "assigned_user_id"),
         Index("ix_renova_cases_org_entry_date", "organization_id", "entry_date"),
+        Index("ix_renova_cases_org_operation_stage", "organization_id", "operation_stage"),
     )

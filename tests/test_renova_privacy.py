@@ -397,6 +397,7 @@ DUPLEX_MIGRATION = "b2f7a4c9d310_split_renova_duplex_from_dwelling_type.py"
 PROPERTY_TAX_DEBT_UNIT_MIGRATION = "c9e5f1a72b84_add_renova_property_tax_debt_unit.py"
 ARCHIVED_MIGRATION = "d4a8e3f61c92_add_renova_case_archived.py"
 PROPOSAL_MIGRATION = "dbec420e1b00_add_renova_proposal_model.py"
+OPERATION_MIGRATION = "f8c1d4e2a907_add_renova_operation_tracking.py"
 
 
 def _render(module, direction: str) -> str:
@@ -446,7 +447,8 @@ def test_migrations_together_match_the_model():
            + _render(_load_migration(DUPLEX_MIGRATION), "upgrade")
            + _render(_load_migration(PROPERTY_TAX_DEBT_UNIT_MIGRATION), "upgrade")
            + _render(_load_migration(ARCHIVED_MIGRATION), "upgrade")
-           + _render(_load_migration(PROPOSAL_MIGRATION), "upgrade"))
+           + _render(_load_migration(PROPOSAL_MIGRATION), "upgrade")
+           + _render(_load_migration(OPERATION_MIGRATION), "upgrade"))
     table = RenovaCase.__table__
 
     for column in table.columns:

@@ -12,8 +12,10 @@ from app.schemas.organization_invitation import (
     OrganizationInvitationPreview,
     OrganizationInvitationRead,
 )
+from app.schemas.organization_member import OrganizationMemberRead, OrganizationMemberUpdate
 from app.schemas.user import CurrentUser, OrganizationRead
 from app.services.organization_invitation_service import OrganizationInvitationService
+from app.services.organization_member_service import OrganizationMemberService
 
 router = APIRouter(prefix="/organization", tags=["organization"])
 
@@ -69,3 +71,28 @@ def revoke_invitation(
 def preview_invitation(token: str, db: Session = Depends(get_db)) -> OrganizationInvitationPreview:
     """Public — no session required. The register page calls this to show which organization a link joins before anyone signs in."""
     return OrganizationInvitationService(db).preview(token)
+
+
+# The admin "Usuarios" tab: who is in this organization, and switching an
+# account off/on. Owner/admin only, like every invitation write above.
+@router.get(
+    "/members", response_model=list[OrganizationMemberRead],
+    dependencies=[Depends(require_role("owner", "admin"))],
+)
+def list_members(
+    current_user: CurrentUser = Depends(get_current_org_user), db: Session = Depends(get_db)
+) -> list[OrganizationMemberRead]:
+    return OrganizationMemberService(db).list(current_user)
+
+
+@router.patch(
+    "/members/{member_id}", response_model=OrganizationMemberRead,
+    dependencies=[Depends(require_role("owner", "admin"))],
+)
+def update_member(
+    member_id: uuid.UUID,
+    data: OrganizationMemberUpdate,
+    current_user: CurrentUser = Depends(get_current_org_user),
+    db: Session = Depends(get_db),
+) -> OrganizationMemberRead:
+    return OrganizationMemberService(db).update(current_user, member_id, data)

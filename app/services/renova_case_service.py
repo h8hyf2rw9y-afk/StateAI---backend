@@ -5,12 +5,14 @@ import base64
 import binascii
 import re
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Iterator
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.core.renova_access import renova_owner_filter
 from app.core.crypto import (
     EncryptionNotConfiguredError,
     SecretDecryptionError,
@@ -21,7 +23,7 @@ from app.core.crypto import (
 from app.models.renova_case import RenovaCase
 from app.repositories.organization_repo import UserRepository
 from app.repositories.renova_case_repo import RenovaCaseRepository
-from app.schemas.enums import RENOVA_CLOSED_STATUSES, RENOVA_PIPELINE_STAGES
+from app.schemas.enums import RENOVA_CLOSED_STATUSES, RENOVA_OPERATION_STAGES, RENOVA_PIPELINE_STAGES
 from app.schemas.renova_case import (
     FINANCIAL_FIELDS,
     RenovaCaseBucketCounts,
@@ -35,6 +37,12 @@ from app.schemas.renova_case import (
     RenovaSensitiveData,
 )
 from app.schemas.user import CurrentUser
+from app.schemas.renova_operation import (
+    RenovaOperationCase,
+    RenovaOperationStageGroup,
+    RenovaOperationsResponse,
+    RenovaOperationUpdate,
+)
 from app.services.audit_service import AuditService
 from app.services.renova_follow_up_service import RenovaFollowUpService
 
@@ -105,6 +113,7 @@ class RenovaCaseService:
         bucket: str | None = None,
         limit: int = 50,
         offset: int = 0,
+        visible_to: uuid.UUID | None = None,
     ) -> list[RenovaCaseListItem]:
         cases = self.repo.list(
             organization_id,
@@ -115,6 +124,7 @@ class RenovaCaseService:
             bucket=bucket,
             limit=limit,
             offset=offset,
+            visible_to=visible_to,
         )
         summaries = RenovaFollowUpService(self.db).summaries_for_cases(
             organization_id, [case.id for case in cases]
@@ -124,11 +134,11 @@ class RenovaCaseService:
             for case in cases
         ]
 
-    def counts(self, organization_id: uuid.UUID) -> RenovaCaseBucketCounts:
+    def counts(self, organization_id: uuid.UUID, *, visible_to: uuid.UUID | None = None) -> RenovaCaseBucketCounts:
         """One cheap grouped query for the three Leads -> Renova tabs' counters (see RenovaCaseBucketCounts)."""
-        return RenovaCaseBucketCounts(**self.repo.counts(organization_id))
+        return RenovaCaseBucketCounts(**self.repo.counts(organization_id, visible_to=visible_to))
 
-    def pipeline(self, organization_id: uuid.UUID) -> RenovaPipelineResponse:
+    def pipeline(self, organization_id: uuid.UUID, *, visible_to: uuid.UUID | None = None) -> RenovaPipelineResponse:
         """
         The Renova Kanban board: every case actively moving through the
         purchase flow (RENOVA_PIPELINE_STAGES), grouped by stage in board
@@ -136,7 +146,7 @@ class RenovaCaseService:
         "rejected" and "cancelled" cases are real and kept, just never on
         this board (see RENOVA_PIPELINE_STAGES's docstring).
         """
-        cases = self.repo.list_for_pipeline(organization_id, RENOVA_PIPELINE_STAGES)
+        cases = self.repo.list_for_pipeline(organization_id, RENOVA_PIPELINE_STAGES, visible_to=visible_to)
         by_status: dict[str, list[RenovaCase]] = {stage: [] for stage in RENOVA_PIPELINE_STAGES}
         for case in cases:
             by_status[case.status].append(case)
@@ -147,14 +157,94 @@ class RenovaCaseService:
             ]
         )
 
-    def get_or_404(self, organization_id: uuid.UUID, case_id: uuid.UUID) -> RenovaCase:
-        case = self.repo.get(organization_id, case_id)
+    def operations(
+        self, organization_id: uuid.UUID, *, visible_to: uuid.UUID | None = None
+    ) -> RenovaOperationsResponse:
+        """Every live post-acceptance property, grouped by its operational stage."""
+        cases = self.repo.list_for_operations(
+            organization_id, RENOVA_OPERATION_STAGES, visible_to=visible_to
+        )
+        by_stage: dict[str, list[RenovaCase]] = {stage: [] for stage in RENOVA_OPERATION_STAGES}
+        for case in cases:
+            if case.operation_stage in by_stage:
+                by_stage[case.operation_stage].append(case)
+        return RenovaOperationsResponse(
+            stages=[
+                RenovaOperationStageGroup(
+                    stage=stage,
+                    cases=[RenovaOperationCase.model_validate(case) for case in by_stage[stage]],
+                )
+                for stage in RENOVA_OPERATION_STAGES
+            ]
+        )
+
+    def update_operation(
+        self,
+        organization_id: uuid.UUID,
+        case_id: uuid.UUID,
+        data: RenovaOperationUpdate,
+        actor_user_id: uuid.UUID | None = None,
+        *,
+        visible_to: uuid.UUID | None = None,
+    ) -> RenovaOperationCase:
+        case = self.get_or_404(organization_id, case_id, visible_to=visible_to)
+        if case.archived or case.status in RENOVA_CLOSED_STATUSES:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "Rejected, cancelled or archived cases cannot be moved through operations.",
+            )
+        if case.status not in ("accepted", "purchased"):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "The proposal must be accepted before starting the property operation.",
+            )
+
+        provided = data.model_dump(exclude_unset=True)
+        before = self._operation_snapshot(case)
+        previous_stage = case.operation_stage
+        for field, value in provided.items():
+            setattr(case, field, value)
+
+        if "operation_stage" in provided and case.operation_stage != previous_stage:
+            case.operation_stage_updated_at = datetime.now(timezone.utc)
+            stage_index = RENOVA_OPERATION_STAGES.index(case.operation_stage)
+            renovation_index = RENOVA_OPERATION_STAGES.index("renovation")
+            case.status = "purchased" if stage_index >= renovation_index else "accepted"
+
+        self.db.flush()
+        self.db.refresh(case)
+        after = self._operation_snapshot(case)
+        if before != after:
+            self.audit.record(
+                organization_id=organization_id,
+                actor_user_id=actor_user_id,
+                entity_type=_ENTITY_TYPE,
+                entity_id=case.id,
+                action=(
+                    "RENOVA_OPERATION_STAGE_CHANGED"
+                    if case.operation_stage != previous_stage
+                    else "RENOVA_OPERATION_UPDATED"
+                ),
+                before=before,
+                after=after,
+            )
+        self.db.commit()
+        self.db.refresh(case)
+        return RenovaOperationCase.model_validate(case)
+
+    def get_or_404(
+        self, organization_id: uuid.UUID, case_id: uuid.UUID, *, visible_to: uuid.UUID | None = None
+    ) -> RenovaCase:
+        """404 both for another organization's case and for a case a Renova-only advisor doesn't own — indistinguishable on purpose."""
+        case = self.repo.get_visible(organization_id, case_id, visible_to=visible_to)
         if case is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Renova case not found.")
         return case
 
-    def get(self, organization_id: uuid.UUID, case_id: uuid.UUID) -> RenovaCaseRead:
-        return self.to_read(self.get_or_404(organization_id, case_id))
+    def get(
+        self, organization_id: uuid.UUID, case_id: uuid.UUID, *, visible_to: uuid.UUID | None = None
+    ) -> RenovaCaseRead:
+        return self.to_read(self.get_or_404(organization_id, case_id, visible_to=visible_to))
 
     def reveal_sensitive_data(self, current_user: CurrentUser, case_id: uuid.UUID) -> RenovaSensitiveData:
         """
@@ -165,7 +255,7 @@ class RenovaCaseService:
         reveal is audited — who, which case, when — never the values, not even
         their last four characters.
         """
-        case = self.get_or_404(current_user.organization_id, case_id)
+        case = self.get_or_404(current_user.organization_id, case_id, visible_to=renova_owner_filter(current_user))
         if current_user.role not in _REVEAL_ROLES and case.assigned_user_id != current_user.id:
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN, "You are not allowed to view this case's protected data."
@@ -186,7 +276,7 @@ class RenovaCaseService:
         return data
 
     def _protected_case(self, current_user: CurrentUser, case_id: uuid.UUID) -> RenovaCase:
-        case = self.get_or_404(current_user.organization_id, case_id)
+        case = self.get_or_404(current_user.organization_id, case_id, visible_to=renova_owner_filter(current_user))
         if current_user.role not in _REVEAL_ROLES and case.assigned_user_id != current_user.id:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "You are not allowed to view this case's protected data.")
         return case
@@ -223,15 +313,22 @@ class RenovaCaseService:
     # --- writes ------------------------------------------------------------
 
     def create(
-        self, organization_id: uuid.UUID, data: RenovaCaseCreate, actor_user_id: uuid.UUID | None = None
+        self,
+        organization_id: uuid.UUID,
+        data: RenovaCaseCreate,
+        actor_user_id: uuid.UUID | None = None,
+        *,
+        visible_to: uuid.UUID | None = None,
     ) -> RenovaCaseRead:
         self._validate_assignee(organization_id, data.assigned_user_id)
+        self._check_own_assignment(visible_to, data.assigned_user_id)
         fields = data.model_dump(exclude={"nss", "credit_number"})
         encrypted = self._encrypt_inputs(
             {"nss": data.nss, "credit_number": data.credit_number}, only_set={"nss", "credit_number"}
         )
         case = self.repo.create(organization_id, created_by_user_id=actor_user_id, **fields, **encrypted)
         self._sync_legacy_final_offer(case)
+        self._sync_operation_entry(case)
         self.db.flush()
         self.db.refresh(case)
         self.audit.record(
@@ -252,11 +349,14 @@ class RenovaCaseService:
         case_id: uuid.UUID,
         data: RenovaCaseUpdate,
         actor_user_id: uuid.UUID | None = None,
+        *,
+        visible_to: uuid.UUID | None = None,
     ) -> RenovaCaseRead:
-        case = self.get_or_404(organization_id, case_id)
+        case = self.get_or_404(organization_id, case_id, visible_to=visible_to)
         provided = data.model_dump(exclude_unset=True)
         if "assigned_user_id" in provided:
             self._validate_assignee(organization_id, provided["assigned_user_id"])
+            self._check_own_assignment(visible_to, provided["assigned_user_id"])
         if provided.get("archived") is True and provided.get("status", case.status) not in RENOVA_CLOSED_STATUSES:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Only rejected or cancelled cases can be archived.")
 
@@ -286,6 +386,7 @@ class RenovaCaseService:
         if case.status not in RENOVA_CLOSED_STATUSES and case.archived:
             case.archived = False
         self._sync_legacy_final_offer(case)
+        self._sync_operation_entry(case)
         self.db.flush()
         self.db.refresh(case)
 
@@ -331,11 +432,44 @@ class RenovaCaseService:
         cash = case.owner_cash_offer or Decimal("0")
         case.final_offer = coverage + cash
 
+    @staticmethod
+    def _sync_operation_entry(case: RenovaCase) -> None:
+        """Start accepted legacy/new cases in operations without guessing later stages."""
+        if case.operation_stage is not None:
+            return
+        if case.status == "accepted":
+            case.operation_stage = "proposal_accepted"
+        elif case.status == "purchased":
+            # The old status only proves acquisition completed. Renovation is
+            # the earliest honest post-purchase stage; users can reclassify it.
+            case.operation_stage = "renovation"
+        else:
+            return
+        case.operation_stage_updated_at = datetime.now(timezone.utc)
+
+    @staticmethod
+    def _operation_snapshot(case: RenovaCase) -> dict:
+        return {
+            "operation_stage": case.operation_stage,
+            "operation_next_action": case.operation_next_action,
+            "operation_due_at": case.operation_due_at.isoformat() if case.operation_due_at else None,
+            "operation_stage_updated_at": (
+                case.operation_stage_updated_at.isoformat() if case.operation_stage_updated_at else None
+            ),
+            "status": case.status,
+        }
+
     def _validate_assignee(self, organization_id: uuid.UUID, user_id: uuid.UUID) -> None:
         """Never trusts a client-supplied advisor id — it must be a user of THIS organization. 404 (not 403) so another org's user ids can't be probed."""
         user = self.user_repo.get(user_id)
         if user is None or user.organization_id != organization_id:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Advisor not found.")
+
+    @staticmethod
+    def _check_own_assignment(visible_to: uuid.UUID | None, assignee_id: uuid.UUID | None) -> None:
+        """A Renova-only advisor works their own cases: they can't create one for, or hand one over to, someone else (that would also hide it from them)."""
+        if visible_to is not None and assignee_id != visible_to:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "You can only assign Renova cases to yourself.")
 
     def _encrypt_inputs(self, values: dict[str, Any], *, only_set: set[str]) -> dict[str, str | None]:
         """{"nss": SecretStr|None, ...} -> {"nss_encrypted": ciphertext|None}. None clears; missing key is left alone."""

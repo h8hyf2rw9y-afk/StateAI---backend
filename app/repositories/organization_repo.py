@@ -75,8 +75,8 @@ class UserRepository:
         stmt = select(User).where(User.organization_id == organization_id)
         return list(self.db.execute(stmt).scalars().all())
 
-    def create(self, user_id: uuid.UUID, organization_id: uuid.UUID, role: str) -> User:
-        user = User(id=user_id, organization_id=organization_id, role=role)
+    def create(self, user_id: uuid.UUID, organization_id: uuid.UUID, role: str, email: str | None = None) -> User:
+        user = User(id=user_id, organization_id=organization_id, role=role, email=email)
         self.db.add(user)
         self.db.flush()
         return user

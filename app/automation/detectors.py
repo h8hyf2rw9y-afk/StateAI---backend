@@ -47,6 +47,7 @@ from app.repositories.appointment_repo import AppointmentRepository
 from app.repositories.buyer_requirement_repo import BuyerRequirementRepository
 from app.repositories.contact_repo import ContactRepository
 from app.repositories.opportunity_repo import OpportunityRepository
+from app.core.renova_access import RENOVA_ONLY_ROLES
 from app.repositories.organization_repo import UserRepository
 from app.repositories.task_repo import TaskRepository
 
@@ -172,6 +173,10 @@ def _notify_every_org_user(
     """
     created: list[Notification] = []
     for user in UserRepository(db).list_for_organization(organization_id):
+        # Only people who can actually open the CRM entity this is about:
+        # never a Renova-only advisor, never a deactivated account.
+        if not user.is_active or user.role in RENOVA_ONLY_ROLES:
+            continue
         notification = create_notification(
             db,
             organization_id,

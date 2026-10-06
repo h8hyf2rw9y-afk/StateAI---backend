@@ -5,6 +5,8 @@ from typing import Sequence
 
 from sqlalchemy import case, func, or_, select
 
+from app.core.renova_access import visible_cases_clause
+
 from app.models.renova_case import RenovaCase
 from app.repositories.base import OrgScopedRepository
 from app.schemas.enums import RENOVA_CASE_STATUSES, RENOVA_CLOSED_STATUSES
@@ -27,9 +29,18 @@ def _escape_like(value: str) -> str:
 
 
 class RenovaCaseRepository(OrgScopedRepository[RenovaCase]):
-    """Every method takes organization_id and folds it into the WHERE clause — the inherited get/create/update do the same (see OrgScopedRepository)."""
+    """
+    Every method takes organization_id and folds it into the WHERE clause — the inherited get/create/update do the same (see OrgScopedRepository).
+    The read methods also take `visible_to`: None for callers who see the whole organization, or a Renova-only advisor's user id (see app/core/renova_access.py).
+    """
 
     model = RenovaCase
+
+    def get_visible(
+        self, organization_id: uuid.UUID, case_id: uuid.UUID, *, visible_to: uuid.UUID | None = None
+    ) -> RenovaCase | None:
+        stmt = select(RenovaCase).where(RenovaCase.id == case_id, *visible_cases_clause(organization_id, visible_to))
+        return self.db.execute(stmt).scalar_one_or_none()
 
     def list(
         self,
@@ -42,8 +53,9 @@ class RenovaCaseRepository(OrgScopedRepository[RenovaCase]):
         bucket: str | None = None,
         limit: int = 50,
         offset: int = 0,
+        visible_to: uuid.UUID | None = None,
     ) -> list[RenovaCase]:
-        stmt = select(RenovaCase).where(RenovaCase.organization_id == organization_id)
+        stmt = select(RenovaCase).where(*visible_cases_clause(organization_id, visible_to))
         if bucket == "active":
             stmt = stmt.where(RenovaCase.archived.is_(False), RenovaCase.status.notin_(RENOVA_CLOSED_STATUSES))
         elif bucket == "closed":
@@ -83,7 +95,7 @@ class RenovaCaseRepository(OrgScopedRepository[RenovaCase]):
         )
         return list(self.db.execute(stmt).scalars().all())
 
-    def counts(self, organization_id: uuid.UUID) -> dict[str, int]:
+    def counts(self, organization_id: uuid.UUID, *, visible_to: uuid.UUID | None = None) -> dict[str, int]:
         """
         One grouped query for the three Leads -> Renova tabs' counters: never
         fetch (or filter client-side) every case in an organization that
@@ -91,7 +103,7 @@ class RenovaCaseRepository(OrgScopedRepository[RenovaCase]):
         """
         stmt = (
             select(RenovaCase.status, RenovaCase.archived, func.count())
-            .where(RenovaCase.organization_id == organization_id)
+            .where(*visible_cases_clause(organization_id, visible_to))
             .group_by(RenovaCase.status, RenovaCase.archived)
         )
         active = closed = rejected = cancelled = archived_total = 0
@@ -115,7 +127,9 @@ class RenovaCaseRepository(OrgScopedRepository[RenovaCase]):
             "archived": archived_total,
         }
 
-    def list_for_pipeline(self, organization_id: uuid.UUID, statuses: Sequence[str]) -> list[RenovaCase]:
+    def list_for_pipeline(
+        self, organization_id: uuid.UUID, statuses: Sequence[str], *, visible_to: uuid.UUID | None = None
+    ) -> list[RenovaCase]:
         """
         Every case in one of `statuses` for the board — deliberately
         unpaginated: the Kanban board must never silently hide a case behind
@@ -124,7 +138,36 @@ class RenovaCaseRepository(OrgScopedRepository[RenovaCase]):
         """
         stmt = (
             select(RenovaCase)
-            .where(RenovaCase.organization_id == organization_id, RenovaCase.status.in_(statuses))
+            .where(*visible_cases_clause(organization_id, visible_to), RenovaCase.status.in_(statuses))
             .order_by(RenovaCase.entry_date.desc(), RenovaCase.created_at.desc())
+        )
+        return list(self.db.execute(stmt).scalars().all())
+
+    def list_for_operations(
+        self,
+        organization_id: uuid.UUID,
+        stages: Sequence[str],
+        *,
+        visible_to: uuid.UUID | None = None,
+    ) -> list[RenovaCase]:
+        """Every live post-acceptance operation, grouped in stage order by the service."""
+        stage_rank = case(
+            *((RenovaCase.operation_stage == stage, rank) for rank, stage in enumerate(stages)),
+            else_=len(stages),
+        )
+        stmt = (
+            select(RenovaCase)
+            .where(
+                *visible_cases_clause(organization_id, visible_to),
+                RenovaCase.archived.is_(False),
+                RenovaCase.status.in_(("accepted", "purchased")),
+                RenovaCase.operation_stage.in_(stages),
+            )
+            .order_by(
+                stage_rank.asc(),
+                RenovaCase.operation_due_at.asc().nulls_last(),
+                RenovaCase.operation_stage_updated_at.asc().nulls_last(),
+                RenovaCase.id.asc(),
+            )
         )
         return list(self.db.execute(stmt).scalars().all())

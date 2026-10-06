@@ -66,8 +66,10 @@ class RenovaFollowUpService:
             grouped[activity.renova_case_id].append(activity)
         return {case_id: self.summarize(grouped[case_id]) for case_id in case_ids}
 
-    def detail(self, organization_id: uuid.UUID, case_id: uuid.UUID) -> RenovaFollowUpDetail:
-        self._case_or_404(organization_id, case_id)
+    def detail(
+        self, organization_id: uuid.UUID, case_id: uuid.UUID, *, visible_to: uuid.UUID | None = None
+    ) -> RenovaFollowUpDetail:
+        self._case_or_404(organization_id, case_id, visible_to)
         activities = self.repo.list_for_case(organization_id, case_id)
         return RenovaFollowUpDetail(
             summary=self.summarize(activities),
@@ -81,8 +83,9 @@ class RenovaFollowUpService:
         data: RenovaFollowUpActivityCreate,
         *,
         actor_user_id: uuid.UUID,
+        visible_to: uuid.UUID | None = None,
     ) -> RenovaFollowUpDetail:
-        self._case_or_404(organization_id, case_id)
+        self._case_or_404(organization_id, case_id, visible_to)
         fields = data.model_dump()
         if data.activity_type == "call" and data.attempt_number is None:
             fields["attempt_number"] = self.repo.next_attempt_number(organization_id, case_id)
@@ -93,7 +96,7 @@ class RenovaFollowUpService:
             **fields,
         )
         self.db.commit()
-        return self.detail(organization_id, case_id)
+        return self.detail(organization_id, case_id, visible_to=visible_to)
 
     def update(
         self,
@@ -101,8 +104,10 @@ class RenovaFollowUpService:
         case_id: uuid.UUID,
         activity_id: uuid.UUID,
         data: RenovaFollowUpActivityUpdate,
+        *,
+        visible_to: uuid.UUID | None = None,
     ) -> RenovaFollowUpDetail:
-        self._case_or_404(organization_id, case_id)
+        self._case_or_404(organization_id, case_id, visible_to)
         activity = self.repo.get(organization_id, activity_id)
         if activity is None or activity.renova_case_id != case_id:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Renova follow-up activity not found.")
@@ -117,10 +122,10 @@ class RenovaFollowUpService:
             setattr(activity, name, value)
         self.db.flush()
         self.db.commit()
-        return self.detail(organization_id, case_id)
+        return self.detail(organization_id, case_id, visible_to=visible_to)
 
-    def _case_or_404(self, organization_id: uuid.UUID, case_id: uuid.UUID):
-        case = self.case_repo.get(organization_id, case_id)
+    def _case_or_404(self, organization_id: uuid.UUID, case_id: uuid.UUID, visible_to: uuid.UUID | None):
+        case = self.case_repo.get_visible(organization_id, case_id, visible_to=visible_to)
         if case is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Renova case not found.")
         return case

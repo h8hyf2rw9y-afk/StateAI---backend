@@ -8,7 +8,7 @@ from app.schemas.enums import OrganizationInvitationStatus, UserRole
 
 # Never "owner" — see OrganizationInvitationService.create. A second owner
 # isn't a real concept this app's authorization model supports anywhere else.
-INVITABLE_ROLES: tuple[str, ...] = ("admin", "agent")
+INVITABLE_ROLES: tuple[str, ...] = ("admin", "agent", "renova_agent")
 
 
 class OrganizationInvitationCreate(BaseModel):

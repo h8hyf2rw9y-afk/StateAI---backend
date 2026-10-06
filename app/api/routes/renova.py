@@ -7,6 +7,7 @@ from app.ai.llm.base import LLMProvider
 from app.ai.llm.errors import LLMConfigError, LLMInvalidOutputError, LLMProviderError, LLMTimeoutError
 from app.ai.llm.factory import build_default_provider
 from app.core.database import get_db
+from app.core.renova_access import renova_owner_filter
 from app.core.security import get_current_org_user
 from app.schemas.enums import RenovaCaseBucket, RenovaCaseStatus
 from app.schemas.renova_case import (
@@ -26,6 +27,7 @@ from app.schemas.renova_follow_up import (
     RenovaFollowUpActivityUpdate,
     RenovaFollowUpDetail,
 )
+from app.schemas.renova_operation import RenovaOperationCase, RenovaOperationsResponse, RenovaOperationUpdate
 from app.services.renova_case_service import RenovaCaseService
 from app.services.renova_follow_up_service import RenovaFollowUpService
 from app.services.renova_quick_notes_service import RenovaQuickNotesService
@@ -78,7 +80,18 @@ def get_renova_pipeline(
     db: Session = Depends(get_db),
 ) -> RenovaPipelineResponse:
     """The Renova Kanban board: every case in an active pipeline stage, grouped by stage. Never NSS, credit number, INE images or ciphertext."""
-    return RenovaCaseService(db).pipeline(current_user.organization_id)
+    return RenovaCaseService(db).pipeline(current_user.organization_id, visible_to=renova_owner_filter(current_user))
+
+
+@pipeline_router.get("/operations", response_model=RenovaOperationsResponse)
+def get_renova_operations(
+    current_user: CurrentUser = Depends(get_current_org_user),
+    db: Session = Depends(get_db),
+) -> RenovaOperationsResponse:
+    """Post-acceptance property operations, grouped from proposal acceptance through owner settlement."""
+    return RenovaCaseService(db).operations(
+        current_user.organization_id, visible_to=renova_owner_filter(current_user)
+    )
 
 
 @router.get("", response_model=list[RenovaCaseListItem])
@@ -105,6 +118,7 @@ def list_renova_cases(
         bucket=bucket,
         limit=limit,
         offset=offset,
+        visible_to=renova_owner_filter(current_user),
     )
 
 
@@ -116,7 +130,7 @@ def get_renova_case_counts(
     db: Session = Depends(get_db),
 ) -> RenovaCaseBucketCounts:
     """Counters for the three Leads → Renova tabs, from one grouped query -- never the case rows themselves."""
-    return RenovaCaseService(db).counts(current_user.organization_id)
+    return RenovaCaseService(db).counts(current_user.organization_id, visible_to=renova_owner_filter(current_user))
 
 
 @router.post("", response_model=RenovaCaseRead, status_code=status.HTTP_201_CREATED)
@@ -125,7 +139,9 @@ def create_renova_case(
     current_user: CurrentUser = Depends(get_current_org_user),
     db: Session = Depends(get_db),
 ) -> RenovaCaseRead:
-    return RenovaCaseService(db).create(current_user.organization_id, data, actor_user_id=current_user.id)
+    return RenovaCaseService(db).create(
+        current_user.organization_id, data, actor_user_id=current_user.id, visible_to=renova_owner_filter(current_user)
+    )
 
 
 @router.get("/{case_id}", response_model=RenovaCaseRead)
@@ -134,7 +150,7 @@ def get_renova_case(
     current_user: CurrentUser = Depends(get_current_org_user),
     db: Session = Depends(get_db),
 ) -> RenovaCaseRead:
-    return RenovaCaseService(db).get(current_user.organization_id, case_id)
+    return RenovaCaseService(db).get(current_user.organization_id, case_id, visible_to=renova_owner_filter(current_user))
 
 
 @router.get("/{case_id}/follow-up", response_model=RenovaFollowUpDetail)
@@ -143,7 +159,9 @@ def get_renova_follow_up(
     current_user: CurrentUser = Depends(get_current_org_user),
     db: Session = Depends(get_db),
 ) -> RenovaFollowUpDetail:
-    return RenovaFollowUpService(db).detail(current_user.organization_id, case_id)
+    return RenovaFollowUpService(db).detail(
+        current_user.organization_id, case_id, visible_to=renova_owner_filter(current_user)
+    )
 
 
 @router.post("/{case_id}/follow-up", response_model=RenovaFollowUpDetail, status_code=status.HTTP_201_CREATED)
@@ -154,7 +172,11 @@ def create_renova_follow_up(
     db: Session = Depends(get_db),
 ) -> RenovaFollowUpDetail:
     return RenovaFollowUpService(db).create(
-        current_user.organization_id, case_id, data, actor_user_id=current_user.id
+        current_user.organization_id,
+        case_id,
+        data,
+        actor_user_id=current_user.id,
+        visible_to=renova_owner_filter(current_user),
     )
 
 
@@ -166,7 +188,25 @@ def update_renova_follow_up(
     current_user: CurrentUser = Depends(get_current_org_user),
     db: Session = Depends(get_db),
 ) -> RenovaFollowUpDetail:
-    return RenovaFollowUpService(db).update(current_user.organization_id, case_id, activity_id, data)
+    return RenovaFollowUpService(db).update(
+        current_user.organization_id, case_id, activity_id, data, visible_to=renova_owner_filter(current_user)
+    )
+
+
+@router.patch("/{case_id}/operation", response_model=RenovaOperationCase)
+def update_renova_operation(
+    case_id: uuid.UUID,
+    data: RenovaOperationUpdate,
+    current_user: CurrentUser = Depends(get_current_org_user),
+    db: Session = Depends(get_db),
+) -> RenovaOperationCase:
+    return RenovaCaseService(db).update_operation(
+        current_user.organization_id,
+        case_id,
+        data,
+        actor_user_id=current_user.id,
+        visible_to=renova_owner_filter(current_user),
+    )
 
 
 @router.get("/{case_id}/sensitive-data", response_model=RenovaSensitiveData)
@@ -216,4 +256,10 @@ def update_renova_case(
     current_user: CurrentUser = Depends(get_current_org_user),
     db: Session = Depends(get_db),
 ) -> RenovaCaseRead:
-    return RenovaCaseService(db).update(current_user.organization_id, case_id, data, actor_user_id=current_user.id)
+    return RenovaCaseService(db).update(
+        current_user.organization_id,
+        case_id,
+        data,
+        actor_user_id=current_user.id,
+        visible_to=renova_owner_filter(current_user),
+    )

@@ -12,8 +12,11 @@ type (for Pydantic/static-typing use). Keep the two in sync by hand.
 
 from typing import Literal
 
-USER_ROLES: tuple[str, ...] = ("owner", "admin", "agent")
-UserRole = Literal["owner", "admin", "agent"]
+# "renova_agent" is a Renova-only advisor: it can use the Renova module (and
+# only ever sees its OWN cases there — see app/core/renova_access.py) and is
+# refused by every other CRM route (see require_crm_access).
+USER_ROLES: tuple[str, ...] = ("owner", "admin", "agent", "renova_agent")
+UserRole = Literal["owner", "admin", "agent", "renova_agent"]
 
 # app/models/organization_invitation.py — "pending" until used or revoked;
 # "accepted"/"revoked" are terminal (a new invitation is created instead of
@@ -412,6 +415,33 @@ RENOVA_CASE_STATUSES: tuple[str, ...] = (
 RenovaCaseStatus = Literal[
     "draft", "new", "reviewing", "offer_preparation", "offer_sent", "negotiating", "accepted", "purchased", "rejected",
     "cancelled",
+]
+
+# Post-acceptance lifecycle. This is deliberately separate from
+# RenovaCase.status: the latter remains the commercial lead state used by
+# Leads (including rejected/cancelled/archive behavior), while this tracks
+# the property operation after an offer is accepted. A case can therefore
+# keep status="accepted" or "purchased" while moving through the more useful
+# operational detail below.
+RENOVA_OPERATION_STAGES: tuple[str, ...] = (
+    "proposal_accepted",
+    "site_survey",
+    "notary_contract",
+    "renovation",
+    "for_sale",
+    "buyer_closing",
+    "owner_settlement",
+    "closed",
+)
+RenovaOperationStage = Literal[
+    "proposal_accepted",
+    "site_survey",
+    "notary_contract",
+    "renovation",
+    "for_sale",
+    "buyer_closing",
+    "owner_settlement",
+    "closed",
 ]
 
 # The Renova Kanban board (GET /renova/pipeline) shows exactly these six
