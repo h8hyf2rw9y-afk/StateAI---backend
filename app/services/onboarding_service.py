@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import uuid
 
+from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models.organization import User
 from app.repositories.organization_repo import OrganizationRepository, UserRepository
 from app.services.audit_service import AuditService
@@ -32,16 +34,23 @@ class OnboardingService:
         self.user_repo = UserRepository(db)
         self.audit = AuditService(db)
 
-    def provision(self, user_id: uuid.UUID, name: str) -> User:
+    def provision(self, user_id: uuid.UUID, name: str, email: str | None = None) -> User:
         existing = self.user_repo.get(user_id)
         if existing is not None:
             return existing
+        if not settings.allow_self_service_signup:
+            # Invitation-only mode: never mint a new organization for an
+            # uninvited sign-in — they join one through an invitation link.
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "Sign-ups are invitation-only. Ask your administrator for an invitation.",
+            )
 
         organization = self.org_repo.create(name)
         # The first person into a brand-new organization owns it — the same
         # role a human operator has always assigned by hand via the manual
         # INSERT this replaces.
-        user = self.user_repo.create(user_id=user_id, organization_id=organization.id, role="owner")
+        user = self.user_repo.create(user_id=user_id, organization_id=organization.id, role="owner", email=email)
         self.audit.record(
             organization_id=organization.id,
             actor_user_id=user_id,

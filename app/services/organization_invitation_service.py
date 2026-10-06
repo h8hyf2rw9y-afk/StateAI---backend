@@ -50,7 +50,7 @@ class OrganizationInvitationService:
 
     def create(self, current_user: CurrentUser, data: OrganizationInvitationCreate) -> OrganizationInvitationCreated:
         if data.role not in INVITABLE_ROLES:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Invitations can only grant the admin or agent role.")
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Invitations can only grant the admin, agent or renova_agent role.")
 
         token = secrets.token_urlsafe(32)
         expires_at = datetime.now(timezone.utc) + _INVITATION_LIFETIME
@@ -127,7 +127,9 @@ class OrganizationInvitationService:
                 "This invitation was sent to a different email address.",
             )
 
-        user = self.user_repo.create(user_id=user_id, organization_id=invitation.organization_id, role=invitation.role)
+        user = self.user_repo.create(
+            user_id=user_id, organization_id=invitation.organization_id, role=invitation.role, email=email
+        )
         invitation.status = "accepted"
         invitation.accepted_by_user_id = user_id
         invitation.accepted_at = datetime.now(timezone.utc)

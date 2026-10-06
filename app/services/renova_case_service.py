@@ -11,6 +11,7 @@ from typing import Any, Iterator
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.core.renova_access import renova_owner_filter
 from app.core.crypto import (
     EncryptionNotConfiguredError,
     SecretDecryptionError,
@@ -105,6 +106,7 @@ class RenovaCaseService:
         bucket: str | None = None,
         limit: int = 50,
         offset: int = 0,
+        visible_to: uuid.UUID | None = None,
     ) -> list[RenovaCaseListItem]:
         cases = self.repo.list(
             organization_id,
@@ -115,6 +117,7 @@ class RenovaCaseService:
             bucket=bucket,
             limit=limit,
             offset=offset,
+            visible_to=visible_to,
         )
         summaries = RenovaFollowUpService(self.db).summaries_for_cases(
             organization_id, [case.id for case in cases]
@@ -124,11 +127,11 @@ class RenovaCaseService:
             for case in cases
         ]
 
-    def counts(self, organization_id: uuid.UUID) -> RenovaCaseBucketCounts:
+    def counts(self, organization_id: uuid.UUID, *, visible_to: uuid.UUID | None = None) -> RenovaCaseBucketCounts:
         """One cheap grouped query for the three Leads -> Renova tabs' counters (see RenovaCaseBucketCounts)."""
-        return RenovaCaseBucketCounts(**self.repo.counts(organization_id))
+        return RenovaCaseBucketCounts(**self.repo.counts(organization_id, visible_to=visible_to))
 
-    def pipeline(self, organization_id: uuid.UUID) -> RenovaPipelineResponse:
+    def pipeline(self, organization_id: uuid.UUID, *, visible_to: uuid.UUID | None = None) -> RenovaPipelineResponse:
         """
         The Renova Kanban board: every case actively moving through the
         purchase flow (RENOVA_PIPELINE_STAGES), grouped by stage in board
@@ -136,7 +139,7 @@ class RenovaCaseService:
         "rejected" and "cancelled" cases are real and kept, just never on
         this board (see RENOVA_PIPELINE_STAGES's docstring).
         """
-        cases = self.repo.list_for_pipeline(organization_id, RENOVA_PIPELINE_STAGES)
+        cases = self.repo.list_for_pipeline(organization_id, RENOVA_PIPELINE_STAGES, visible_to=visible_to)
         by_status: dict[str, list[RenovaCase]] = {stage: [] for stage in RENOVA_PIPELINE_STAGES}
         for case in cases:
             by_status[case.status].append(case)
@@ -147,14 +150,19 @@ class RenovaCaseService:
             ]
         )
 
-    def get_or_404(self, organization_id: uuid.UUID, case_id: uuid.UUID) -> RenovaCase:
-        case = self.repo.get(organization_id, case_id)
+    def get_or_404(
+        self, organization_id: uuid.UUID, case_id: uuid.UUID, *, visible_to: uuid.UUID | None = None
+    ) -> RenovaCase:
+        """404 both for another organization's case and for a case a Renova-only advisor doesn't own — indistinguishable on purpose."""
+        case = self.repo.get_visible(organization_id, case_id, visible_to=visible_to)
         if case is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Renova case not found.")
         return case
 
-    def get(self, organization_id: uuid.UUID, case_id: uuid.UUID) -> RenovaCaseRead:
-        return self.to_read(self.get_or_404(organization_id, case_id))
+    def get(
+        self, organization_id: uuid.UUID, case_id: uuid.UUID, *, visible_to: uuid.UUID | None = None
+    ) -> RenovaCaseRead:
+        return self.to_read(self.get_or_404(organization_id, case_id, visible_to=visible_to))
 
     def reveal_sensitive_data(self, current_user: CurrentUser, case_id: uuid.UUID) -> RenovaSensitiveData:
         """
@@ -165,7 +173,7 @@ class RenovaCaseService:
         reveal is audited — who, which case, when — never the values, not even
         their last four characters.
         """
-        case = self.get_or_404(current_user.organization_id, case_id)
+        case = self.get_or_404(current_user.organization_id, case_id, visible_to=renova_owner_filter(current_user))
         if current_user.role not in _REVEAL_ROLES and case.assigned_user_id != current_user.id:
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN, "You are not allowed to view this case's protected data."
@@ -186,7 +194,7 @@ class RenovaCaseService:
         return data
 
     def _protected_case(self, current_user: CurrentUser, case_id: uuid.UUID) -> RenovaCase:
-        case = self.get_or_404(current_user.organization_id, case_id)
+        case = self.get_or_404(current_user.organization_id, case_id, visible_to=renova_owner_filter(current_user))
         if current_user.role not in _REVEAL_ROLES and case.assigned_user_id != current_user.id:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "You are not allowed to view this case's protected data.")
         return case
@@ -223,9 +231,15 @@ class RenovaCaseService:
     # --- writes ------------------------------------------------------------
 
     def create(
-        self, organization_id: uuid.UUID, data: RenovaCaseCreate, actor_user_id: uuid.UUID | None = None
+        self,
+        organization_id: uuid.UUID,
+        data: RenovaCaseCreate,
+        actor_user_id: uuid.UUID | None = None,
+        *,
+        visible_to: uuid.UUID | None = None,
     ) -> RenovaCaseRead:
         self._validate_assignee(organization_id, data.assigned_user_id)
+        self._check_own_assignment(visible_to, data.assigned_user_id)
         fields = data.model_dump(exclude={"nss", "credit_number"})
         encrypted = self._encrypt_inputs(
             {"nss": data.nss, "credit_number": data.credit_number}, only_set={"nss", "credit_number"}
@@ -252,11 +266,14 @@ class RenovaCaseService:
         case_id: uuid.UUID,
         data: RenovaCaseUpdate,
         actor_user_id: uuid.UUID | None = None,
+        *,
+        visible_to: uuid.UUID | None = None,
     ) -> RenovaCaseRead:
-        case = self.get_or_404(organization_id, case_id)
+        case = self.get_or_404(organization_id, case_id, visible_to=visible_to)
         provided = data.model_dump(exclude_unset=True)
         if "assigned_user_id" in provided:
             self._validate_assignee(organization_id, provided["assigned_user_id"])
+            self._check_own_assignment(visible_to, provided["assigned_user_id"])
         if provided.get("archived") is True and provided.get("status", case.status) not in RENOVA_CLOSED_STATUSES:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Only rejected or cancelled cases can be archived.")
 
@@ -336,6 +353,12 @@ class RenovaCaseService:
         user = self.user_repo.get(user_id)
         if user is None or user.organization_id != organization_id:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Advisor not found.")
+
+    @staticmethod
+    def _check_own_assignment(visible_to: uuid.UUID | None, assignee_id: uuid.UUID | None) -> None:
+        """A Renova-only advisor works their own cases: they can't create one for, or hand one over to, someone else (that would also hide it from them)."""
+        if visible_to is not None and assignee_id != visible_to:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "You can only assign Renova cases to yourself.")
 
     def _encrypt_inputs(self, values: dict[str, Any], *, only_set: set[str]) -> dict[str, str | None]:
         """{"nss": SecretStr|None, ...} -> {"nss_encrypted": ciphertext|None}. None clears; missing key is left alone."""

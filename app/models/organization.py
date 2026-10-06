@@ -1,6 +1,7 @@
 import uuid
+from datetime import datetime
 
-from sqlalchemy import ForeignKey, Index
+from sqlalchemy import DateTime, ForeignKey, Index, true
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPKMixin
@@ -34,6 +35,14 @@ class User(Base, TimestampMixin):
     )
     # Mirrors the UserRole union in the frontend's types/user.ts.
     role: Mapped[str] = mapped_column(nullable=False, default="agent")
+    # A copy of the Supabase Auth email, taken from the verified JWT when the
+    # row is created (onboarding / accepting an invitation), so an owner can
+    # tell their teammates apart — auth.users itself is never queried at runtime.
+    email: Mapped[str | None] = mapped_column(nullable=True)
+    # Deactivating keeps the row (and every case it owns) but makes
+    # get_current_org_user refuse the account — see app/core/security.py.
+    is_active: Mapped[bool] = mapped_column(nullable=False, default=True, server_default=true())
+    deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     organization: Mapped["Organization"] = relationship(back_populates="users")
 

@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     # Comma-separated list of origins allowed to call this API (CORS).
     frontend_origins: str = "http://localhost:3000"
 
+    # Whether someone who signs in WITHOUT an invitation gets a brand-new
+    # organization of their own (POST /me/organization). Set it to false to
+    # make the app invitation-only: such a session then stays unprovisioned
+    # (403 on every CRM route) until an owner/admin invites that email.
+    allow_self_service_signup: bool = True
+
     # Fernet key(s) protecting Renova's most sensitive owner fields (NSS and
     # credit number) at rest — see app/core/crypto.py. A urlsafe-base64
     # 32-byte key; generate one with:

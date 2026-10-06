@@ -55,7 +55,8 @@ def provision_my_organization(
     RegisterForm/auth callback).
     """
     name = data.name or _default_organization_name(claims)
-    user = OnboardingService(db).provision(user_id, name)
+    email = (claims.get("email") or "").strip().lower() or None
+    user = OnboardingService(db).provision(user_id, name, email)
     return build_current_user(claims, user)
 
 

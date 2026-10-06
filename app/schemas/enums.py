@@ -12,8 +12,11 @@ type (for Pydantic/static-typing use). Keep the two in sync by hand.
 
 from typing import Literal
 
-USER_ROLES: tuple[str, ...] = ("owner", "admin", "agent")
-UserRole = Literal["owner", "admin", "agent"]
+# "renova_agent" is a Renova-only advisor: it can use the Renova module (and
+# only ever sees its OWN cases there — see app/core/renova_access.py) and is
+# refused by every other CRM route (see require_crm_access).
+USER_ROLES: tuple[str, ...] = ("owner", "admin", "agent", "renova_agent")
+UserRole = Literal["owner", "admin", "agent", "renova_agent"]
 
 # app/models/organization_invitation.py — "pending" until used or revoked;
 # "accepted"/"revoked" are terminal (a new invitation is created instead of

@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.ai.llm.base import LLMProvider
 from app.core.config import settings
+from app.core.renova_access import renova_case_scope
 from app.models.renova_case import RenovaCase
 from app.models.renova_chat import RenovaChatConversation, RenovaChatMessage
 from app.renova_chat.fields import (
@@ -110,8 +111,11 @@ class RenovaChatService:
             safe_question,
             previous_intent=self.repo.last_assistant_intent(conversation.id),
         )
-        matched_case = self._resolve_case(current_user.organization_id, parsed, conversation)
-        answer = self._answer(current_user.organization_id, parsed, matched_case)
+        # Organization AND, for a Renova-only advisor, their own cases — every
+        # query below filters by this, never by organization_id alone.
+        scope = renova_case_scope(current_user)
+        matched_case = self._resolve_case(scope, parsed, conversation)
+        answer = self._answer(scope, parsed, matched_case)
 
         if matched_case is not None:
             conversation.context_case_id = matched_case.id
@@ -147,7 +151,7 @@ class RenovaChatService:
 
     def _resolve_case(
         self,
-        organization_id: uuid.UUID,
+        scope: tuple,
         parsed: ParsedRenovaQuestion,
         conversation: RenovaChatConversation,
     ) -> RenovaCase | None:
@@ -168,7 +172,7 @@ class RenovaChatService:
             return self.db.execute(
                 select(RenovaCase).where(
                     RenovaCase.id == conversation.context_case_id,
-                    RenovaCase.organization_id == organization_id,
+                    *scope,
                 )
             ).scalar_one_or_none()
 
@@ -177,7 +181,7 @@ class RenovaChatService:
             self.db.execute(
                 select(RenovaCase)
                 .where(
-                    RenovaCase.organization_id == organization_id,
+                    *scope,
                     RenovaCase.owner_name.ilike(pattern, escape="\\"),
                 )
                 .order_by(RenovaCase.entry_date.desc())
@@ -197,7 +201,7 @@ class RenovaChatService:
             f"Encontré varios propietarios que coinciden: {names}. Escribe el nombre completo.",
         )
 
-    def _answer(self, organization_id: uuid.UUID, parsed: ParsedRenovaQuestion, case: RenovaCase | None) -> str:
+    def _answer(self, scope: tuple, parsed: ParsedRenovaQuestion, case: RenovaCase | None) -> str:
         if parsed.intent == "help":
             return (
                 "Puedo consultar los leads activos de Renova, resumir el pipeline, contar y listar expedientes "
@@ -219,23 +223,23 @@ class RenovaChatService:
                 "expedientes y del pipeline de Renova; no creo, edito ni elimino datos."
             )
         if parsed.intent == "active_count":
-            count = self._count(*self._active_filter(organization_id))
+            count = self._count(*self._active_filter(scope))
             return f"Tienes {count} lead{'s' if count != 1 else ''} activo{'s' if count != 1 else ''} en Renova."
         if parsed.intent == "active_list":
             return self._list_cases(
-                self._active_filter(organization_id),
+                self._active_filter(scope),
                 label="Leads activos",
                 empty_message="No tienes leads activos en Renova.",
             )
         if parsed.intent == "archived_count":
-            count = self._count(*self._archived_filter(organization_id))
+            count = self._count(*self._archived_filter(scope))
             return (
                 f"Tienes {count} expediente{'s' if count != 1 else ''} "
                 f"archivado{'s' if count != 1 else ''} en Renova."
             )
         if parsed.intent == "archived_list":
             return self._list_cases(
-                self._archived_filter(organization_id),
+                self._archived_filter(scope),
                 label="Expedientes archivados",
                 empty_message="No tienes expedientes archivados en Renova.",
             )
@@ -244,7 +248,7 @@ class RenovaChatService:
                 self.db.execute(
                     select(RenovaCase.status, func.count())
                     .where(
-                        RenovaCase.organization_id == organization_id,
+                        *scope,
                         RenovaCase.status.in_(ACTIVE_STATUSES),
                         RenovaCase.archived.is_(False),
                     )
@@ -255,7 +259,7 @@ class RenovaChatService:
                 self.db.execute(
                     select(RenovaCase.status, func.count())
                     .where(
-                        RenovaCase.organization_id == organization_id,
+                        *scope,
                         RenovaCase.status.in_(TERMINAL_STATUSES),
                     )
                     .group_by(RenovaCase.status)
@@ -286,7 +290,7 @@ class RenovaChatService:
             return answer
 
         if parsed.intent in ("filtered_count", "filtered_list"):
-            return self._filtered_answer(organization_id, parsed)
+            return self._filtered_answer(scope, parsed)
 
         assert case is not None
         name = case.owner_name
@@ -374,14 +378,14 @@ class RenovaChatService:
 
         return "; ".join(parts) + "."
 
-    def _filtered_answer(self, organization_id: uuid.UUID, parsed: ParsedRenovaQuestion) -> str:
+    def _filtered_answer(self, scope: tuple, parsed: ParsedRenovaQuestion) -> str:
         if parsed.filter is None:
             return "No entendí ese filtro. ¿Puedes reformular la pregunta?"
         clause = build_filter_clause(parsed.filter)
         if clause is None:
             return "No entendí ese filtro. ¿Puedes reformular la pregunta?"
 
-        filters = (RenovaCase.organization_id == organization_id, RenovaCase.archived.is_(False), clause)
+        filters = (*scope, RenovaCase.archived.is_(False), clause)
         description = describe_filter(parsed.filter)
 
         if parsed.intent == "filtered_count":
@@ -404,16 +408,16 @@ class RenovaChatService:
         return f"Hay {total} lead{'s' if total != 1 else ''} {description}:\n\n{bullets}{suffix}"
 
     @staticmethod
-    def _active_filter(organization_id: uuid.UUID) -> tuple:
+    def _active_filter(scope: tuple) -> tuple:
         return (
-            RenovaCase.organization_id == organization_id,
+            *scope,
             RenovaCase.status.in_(ACTIVE_STATUSES),
             RenovaCase.archived.is_(False),
         )
 
     @staticmethod
-    def _archived_filter(organization_id: uuid.UUID) -> tuple:
-        return (RenovaCase.organization_id == organization_id, RenovaCase.archived.is_(True))
+    def _archived_filter(scope: tuple) -> tuple:
+        return (*scope, RenovaCase.archived.is_(True))
 
     def _count(self, *filters) -> int:
         return self.db.scalar(select(func.count()).select_from(RenovaCase).where(*filters)) or 0

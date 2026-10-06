@@ -106,6 +106,13 @@ def get_current_org_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This account is not yet assigned to an organization.",
         )
+    if not user_row.is_active:
+        # Deactivated by an owner/admin (see OrganizationMemberService):
+        # the session is still valid, the account just can't use the CRM.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account has been deactivated.",
+        )
 
     return build_current_user(claims, user_row)
 
