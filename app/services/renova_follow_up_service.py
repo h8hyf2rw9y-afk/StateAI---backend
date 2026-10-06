@@ -108,11 +108,11 @@ class RenovaFollowUpService:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Renova follow-up activity not found.")
         fields = data.model_dump(exclude_unset=True)
         if activity.activity_type == "follow_up" and ("result" in fields or "attempt_number" in fields):
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "A scheduled follow-up cannot carry call fields.")
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "A scheduled follow-up cannot carry call fields.")
         if activity.activity_type == "call" and fields.get("result", activity.result) is None:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "A call must keep a result.")
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "A call must keep a result.")
         if activity.activity_type == "follow_up" and fields.get("next_follow_up_at", activity.next_follow_up_at) is None:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "A scheduled follow-up must keep its date.")
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "A scheduled follow-up must keep its date.")
         for name, value in fields.items():
             setattr(activity, name, value)
         self.db.flush()
