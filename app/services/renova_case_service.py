@@ -198,15 +198,15 @@ class RenovaCaseService:
         case = self._protected_case(current_user, case_id)
         match = _INE_DATA_URL.fullmatch(image)
         if not match or len(image) > 3_000_000:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Use a JPEG, PNG or WebP image smaller than 2 MB.")
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Use a JPEG, PNG or WebP image smaller than 2 MB.")
         try:
             raw = base64.b64decode(match.group(2), validate=True)
         except binascii.Error:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid image.") from None
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Invalid image.") from None
         signatures = {"jpeg": raw.startswith(b"\xff\xd8\xff"), "png": raw.startswith(b"\x89PNG\r\n\x1a\n"),
                       "webp": raw.startswith(b"RIFF") and raw[8:12] == b"WEBP"}
         if not raw or len(raw) > _MAX_INE_BYTES or not signatures[match.group(1)]:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Use a JPEG, PNG or WebP image smaller than 2 MB.")
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Use a JPEG, PNG or WebP image smaller than 2 MB.")
         with self._translate_crypto_errors():
             setattr(case, _INE_COLUMNS[side], encrypt_secret(image))
         self.audit.record(organization_id=current_user.organization_id, actor_user_id=current_user.id,
@@ -251,7 +251,7 @@ class RenovaCaseService:
         if "assigned_user_id" in provided:
             self._validate_assignee(organization_id, provided["assigned_user_id"])
         if provided.get("archived") is True and provided.get("status", case.status) not in RENOVA_CLOSED_STATUSES:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Only rejected or cancelled cases can be archived.")
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Only rejected or cancelled cases can be archived.")
 
         before_snapshot = self._audit_snapshot(case)
         before_values = {f: getattr(case, f) for f in provided if f not in _SENSITIVE_INPUTS}

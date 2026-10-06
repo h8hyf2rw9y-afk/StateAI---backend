@@ -15,7 +15,7 @@ def _check_ownership_consistency(prop: Property) -> None:
     """Re-validates the *merged* row after a partial update — same reasoning as app/services/buyer_requirement_service.py's _check_minmax, needed because PropertyUpdate's own model has no way to see fields the caller didn't include in this particular PATCH."""
     if prop.ownership_type == "own" and prop.collaboration_status is not None:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
             "collaboration_status only applies to an external (ownership_type='external') property.",
         )
 

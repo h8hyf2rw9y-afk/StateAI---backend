@@ -97,7 +97,7 @@ class OpportunityService:
         valid = OPPORTUNITY_STAGES_BY_TYPE[opportunity_type]
         if stage not in valid:
             raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
                 f"'{stage}' is not a valid stage for a {opportunity_type} opportunity. Valid stages: {', '.join(valid)}.",
             )
 
@@ -105,7 +105,7 @@ class OpportunityService:
     def _validate_lost_reason(stage: str, lost_reason: str | None) -> None:
         if stage == "lost" and not lost_reason:
             raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY, "lost_reason is required when marking an opportunity as lost."
+                status.HTTP_422_UNPROCESSABLE_CONTENT, "lost_reason is required when marking an opportunity as lost."
             )
 
     def _validate_references(
@@ -120,7 +120,7 @@ class OpportunityService:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "Buyer requirement not found.")
             if requirement.contact_id != contact_id:
                 raise HTTPException(
-                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status.HTTP_422_UNPROCESSABLE_CONTENT,
                     "buyer_requirement_id must belong to this opportunity's own contact.",
                 )
 

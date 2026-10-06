@@ -50,7 +50,7 @@ class OrganizationInvitationService:
 
     def create(self, current_user: CurrentUser, data: OrganizationInvitationCreate) -> OrganizationInvitationCreated:
         if data.role not in INVITABLE_ROLES:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invitations can only grant the admin or agent role.")
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Invitations can only grant the admin or agent role.")
 
         token = secrets.token_urlsafe(32)
         expires_at = datetime.now(timezone.utc) + _INVITATION_LIFETIME

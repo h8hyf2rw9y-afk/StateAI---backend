@@ -41,7 +41,7 @@ def _check_start_before_end(start_at: datetime, end_at: datetime) -> None:
     handler — app/core/errors.py) instead of this specific, friendly 422.
     """
     if _as_aware_utc(start_at) > _as_aware_utc(end_at):
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "start_at must be before or equal to end_at.")
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "start_at must be before or equal to end_at.")
 
 
 class AppointmentService:

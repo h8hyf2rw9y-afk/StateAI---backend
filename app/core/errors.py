@@ -48,7 +48,7 @@ _STATUS_CODE_NAMES: dict[int, str] = {
     status.HTTP_404_NOT_FOUND: "NOT_FOUND",
     status.HTTP_409_CONFLICT: "CONFLICT",
     status.HTTP_429_TOO_MANY_REQUESTS: "RATE_LIMITED",
-    status.HTTP_422_UNPROCESSABLE_ENTITY: "VALIDATION_ERROR",
+    status.HTTP_422_UNPROCESSABLE_CONTENT: "VALIDATION_ERROR",
     status.HTTP_502_BAD_GATEWAY: "BAD_GATEWAY",
     status.HTTP_503_SERVICE_UNAVAILABLE: "SERVICE_UNAVAILABLE",
     status.HTTP_504_GATEWAY_TIMEOUT: "GATEWAY_TIMEOUT",
@@ -111,7 +111,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         # field the caller actually sent, not FastAPI's internal location shape.
         details = "; ".join(f"{'.'.join(str(p) for p in err['loc'][1:])}: {err['msg']}" for err in exc.errors())
         return _error_response(
-            status.HTTP_422_UNPROCESSABLE_ENTITY, "VALIDATION_ERROR", details or "Invalid request.", request_id
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "VALIDATION_ERROR", details or "Invalid request.", request_id
         )
 
     @app.exception_handler(IntegrityError)

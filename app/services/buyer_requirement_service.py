@@ -25,7 +25,7 @@ def _check_minmax(requirement: BuyerRequirement) -> None:
         lo, hi = getattr(requirement, f"{field}_min"), getattr(requirement, f"{field}_max")
         if lo is not None and hi is not None and lo > hi:
             raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY, f"{field}_min must be <= {field}_max."
+                status.HTTP_422_UNPROCESSABLE_CONTENT, f"{field}_min must be <= {field}_max."
             )
 
 

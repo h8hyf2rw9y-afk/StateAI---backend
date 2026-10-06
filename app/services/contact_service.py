@@ -58,7 +58,7 @@ class ContactService:
         if not updated.email and not updated.phone:
             self.db.rollback()
             raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY, "A contact must keep at least an email or a phone."
+                status.HTTP_422_UNPROCESSABLE_CONTENT, "A contact must keep at least an email or a phone."
             )
         after = ContactRead.model_validate(updated).model_dump(mode="json")
         self.audit.record(
