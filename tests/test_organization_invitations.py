@@ -109,10 +109,12 @@ def test_owner_can_create_an_invitation(db_session: Session):
         app.dependency_overrides.clear()
 
 
-def test_admin_can_create_an_invitation(db_session: Session):
+def test_admin_can_create_an_advisor_invitation(db_session: Session):
     admin_client, _ = _org_client(db_session, role="admin")
     try:
-        response = admin_client.post(INVITATIONS_URL, json={"email": "colega@example.com"})
+        response = admin_client.post(
+            INVITATIONS_URL, json={"email": "colega@example.com", "role": "renova_agent"}
+        )
         assert response.status_code == 201
     finally:
         app.dependency_overrides.clear()

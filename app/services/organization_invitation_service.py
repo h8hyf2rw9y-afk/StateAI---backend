@@ -51,6 +51,11 @@ class OrganizationInvitationService:
     def create(self, current_user: CurrentUser, data: OrganizationInvitationCreate) -> OrganizationInvitationCreated:
         if data.role not in INVITABLE_ROLES:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Invitations can only grant the admin, agent or renova_agent role.")
+        if current_user.role != "owner" and data.role != "renova_agent":
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "Only the owner can invite administrators or general CRM agents.",
+            )
 
         token = secrets.token_urlsafe(32)
         expires_at = datetime.now(timezone.utc) + _INVITATION_LIFETIME
@@ -78,12 +83,16 @@ class OrganizationInvitationService:
 
     def list(self, current_user: CurrentUser) -> list[OrganizationInvitationRead]:
         invitations = self.repo.list_for_organization(current_user.organization_id)
+        if current_user.role != "owner":
+            invitations = [invitation for invitation in invitations if invitation.role == "renova_agent"]
         return [OrganizationInvitationRead.model_validate(i) for i in invitations]
 
     def revoke(self, current_user: CurrentUser, invitation_id: uuid.UUID) -> None:
         invitation = self.repo.get_for_organization(current_user.organization_id, invitation_id)
         if invitation is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Invitation not found.")
+        if current_user.role != "owner" and invitation.role != "renova_agent":
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the owner can revoke this invitation.")
         if invitation.status != "pending":
             raise HTTPException(status.HTTP_409_CONFLICT, "Only a pending invitation can be revoked.")
 

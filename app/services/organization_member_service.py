@@ -55,15 +55,37 @@ class OrganizationMemberService:
         if member is None or member.organization_id != current_user.organization_id:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Member not found.")
         if member.id == current_user.id:
-            raise HTTPException(status.HTTP_409_CONFLICT, "You can't deactivate your own account.")
+            raise HTTPException(status.HTTP_409_CONFLICT, "You can't change your own account.")
         if member.role == "owner":
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "The organization owner can't be deactivated.")
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "The organization owner can't be changed.")
         if member.role == "admin" and current_user.role != "owner":
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the owner can change another admin's access.")
+        if data.role is not None:
+            if current_user.role != "owner":
+                raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the owner can change member roles.")
+            if data.role == "owner":
+                raise HTTPException(status.HTTP_403_FORBIDDEN, "The owner role can't be granted to another account.")
 
-        if member.is_active != data.is_active:
+        changed = False
+        if data.role is not None and member.role != data.role:
+            previous_role = member.role
+            member.role = data.role
+            changed = True
+            self.db.flush()
+            self.audit.record(
+                organization_id=current_user.organization_id,
+                actor_user_id=current_user.id,
+                entity_type=_ENTITY_TYPE,
+                entity_id=member.id,
+                action="USER_ROLE_CHANGED",
+                before={"email": member.email, "role": previous_role},
+                after={"email": member.email, "role": member.role},
+            )
+
+        if data.is_active is not None and member.is_active != data.is_active:
             member.is_active = data.is_active
             member.deactivated_at = None if data.is_active else datetime.now(timezone.utc)
+            changed = True
             self.db.flush()
             self.audit.record(
                 organization_id=current_user.organization_id,
@@ -73,6 +95,7 @@ class OrganizationMemberService:
                 action="USER_REACTIVATED" if data.is_active else "USER_DEACTIVATED",
                 after={"email": member.email, "role": member.role},
             )
+        if changed:
             self.db.commit()
             self.db.refresh(member)
         counts = self._renova_case_counts(current_user.organization_id)

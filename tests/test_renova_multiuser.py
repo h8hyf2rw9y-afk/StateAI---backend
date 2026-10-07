@@ -1,7 +1,8 @@
 """
-Renova-only advisors (role "renova_agent") inside a shared organization:
+Retify advisors (role "renova_agent") inside a shared organization:
 each one sees and works only their own Renova cases, never the rest of the
-CRM, while the owner/admin keeps seeing everything and manages who has access.
+CRM. The owner keeps the complete CRM; a normal admin supervises all Retify
+cases but cannot enter the owner's general CRM or control another admin.
 All people and identifiers are synthetic.
 """
 
@@ -109,7 +110,7 @@ def _names(response) -> set[str]:
 # --- what a Renova advisor sees -------------------------------------------------
 
 
-def test_renova_agent_lists_only_cases_they_created_or_are_assigned(db_session, team):
+def test_renova_agent_lists_only_cases_currently_assigned_to_them(db_session, team):
     client = _client_as(db_session, team["ana"])
     assert _names(client.get(URL, params={"bucket": "active"})) == {"Caso de Ana", "Asignado a Ana"}
 
@@ -215,6 +216,7 @@ def test_advisor_creates_cases_only_for_themselves(db_session, team):
     created = client.post(URL, json={**base, "assigned_user_id": str(team["ana"].id)})
     assert created.status_code == 201, created.text
     assert created.json()["created_by_user_id"] == str(team["ana"].id)
+    assert created.json()["assigned_user_id"] == str(team["ana"].id)
 
 
 def test_advisor_cannot_hand_a_case_over_to_someone_else(db_session, team):
@@ -229,6 +231,21 @@ def test_owner_can_reassign_a_case_to_an_advisor(db_session, team):
     assert response.status_code == 200
     _act_as(team["beto"])
     assert "Caso del Dueño" in _names(client.get(URL))
+
+
+def test_reassignment_revokes_the_previous_advisors_access(db_session, team):
+    owner_client = _client_as(db_session, team["owner"])
+    case_id = team["cases"]["ana"].id
+
+    moved = owner_client.patch(f"{URL}/{case_id}", json={"assigned_user_id": str(team["beto"].id)})
+    assert moved.status_code == 200, moved.text
+
+    _act_as(team["ana"])
+    assert owner_client.get(f"{URL}/{case_id}").status_code == 404
+    assert "Caso de Ana" not in _names(owner_client.get(URL))
+
+    _act_as(team["beto"])
+    assert owner_client.get(f"{URL}/{case_id}").status_code == 200
 
 
 def test_renova_chat_only_counts_and_finds_the_advisors_own_cases(db_session, team):
@@ -261,7 +278,19 @@ def test_renova_agent_is_refused_by_every_crm_route(db_session, team, path):
     client = _client_as(db_session, team["ana"])
     response = client.get(path)
     assert response.status_code == 403
-    assert response.json()["error"]["message"] == "This account only has access to the Renova module."
+    assert response.json()["error"]["message"] == "This account only has access to the Retify workspace."
+
+
+def test_admin_sees_all_retify_cases_but_not_the_owners_general_crm(db_session, team, organization_id):
+    admin = _member(db_session, organization_id, "admin", email="supervisor@example.com")
+    client = _client_as(db_session, admin)
+
+    assert _names(client.get(URL, params={"bucket": "active"})) == {
+        "Caso del Dueño", "Caso de Ana", "Caso de Beto", "Asignado a Ana"
+    }
+    response = client.get("/api/v1/contacts")
+    assert response.status_code == 403
+    assert response.json()["error"]["message"] == "This account only has access to the Retify workspace."
 
 
 def test_renova_agent_can_still_read_me_and_their_organization(db_session, team):
@@ -322,6 +351,44 @@ def test_owner_deactivates_and_reactivates_an_advisor_with_audit(db_session, tea
     assert actions == ["USER_DEACTIVATED", "USER_REACTIVATED"]
     # Their cases are untouched.
     assert db_session.get(RenovaCase, team["cases"]["ana"].id) is not None
+
+
+def test_only_owner_changes_roles_and_can_never_grant_owner(db_session, team, organization_id):
+    owner_client = _client_as(db_session, team["owner"])
+    changed = owner_client.patch(
+        f"/api/v1/organization/members/{team['ana'].id}", json={"role": "admin"}
+    )
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["role"] == "admin"
+    audit = db_session.query(AuditLog).filter(AuditLog.entity_id == team["ana"].id).one()
+    assert audit.action == "USER_ROLE_CHANGED"
+    assert audit.before_data["role"] == "renova_agent"
+    assert audit.after_data["role"] == "admin"
+
+    assert owner_client.patch(
+        f"/api/v1/organization/members/{team['beto'].id}", json={"role": "owner"}
+    ).status_code == 403
+
+    admin = _member(db_session, organization_id, "admin")
+    admin_client = _client_as(db_session, admin)
+    assert admin_client.patch(
+        f"/api/v1/organization/members/{team['beto'].id}", json={"role": "admin"}
+    ).status_code == 403
+
+
+def test_admin_can_invite_advisors_but_only_owner_can_invite_admins(db_session, team, organization_id):
+    admin = _member(db_session, organization_id, "admin")
+    client = _client_as(db_session, admin)
+    advisor = client.post(
+        "/api/v1/organization/invitations", json={"email": "asesor@example.com", "role": "renova_agent"}
+    )
+    assert advisor.status_code == 201, advisor.text
+    assert client.post(
+        "/api/v1/organization/invitations", json={"email": "admin2@example.com", "role": "admin"}
+    ).status_code == 403
+    assert client.post(
+        "/api/v1/organization/invitations", json={"email": "crm@example.com", "role": "agent"}
+    ).status_code == 403
 
 
 def test_nobody_deactivates_themselves_or_the_owner(db_session, team, organization_id):

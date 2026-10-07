@@ -1,9 +1,10 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from app.schemas.common import ORMModel
+from app.schemas.enums import UserRole
 
 
 class MemberRenovaCaseCounts(BaseModel):
@@ -27,4 +28,11 @@ class OrganizationMemberRead(ORMModel):
 
 
 class OrganizationMemberUpdate(BaseModel):
-    is_active: bool
+    is_active: bool | None = None
+    role: UserRole | None = None
+
+    @model_validator(mode="after")
+    def has_a_change(self) -> "OrganizationMemberUpdate":
+        if self.is_active is None and self.role is None:
+            raise ValueError("At least one member change is required.")
+        return self
