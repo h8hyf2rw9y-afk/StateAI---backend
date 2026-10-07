@@ -12,6 +12,10 @@ os.environ.setdefault("AI_AGENT_COOLDOWN_SECONDS", "0")
 os.environ.setdefault("AI_USER_RATE_LIMIT_PER_MINUTE", "1000")
 os.environ.setdefault("AI_ORGANIZATION_RATE_LIMIT_PER_MINUTE", "1000")
 os.environ.setdefault("AI_CONTACT_AGENT_RATE_LIMIT_PER_HOUR", "1000")
+# The suite tests self-service onboarding as a feature; a developer's local
+# .env may run invitation-only (ALLOW_SELF_SERVICE_SIGNUP=false). Tests that
+# need that mode set it themselves (see test_renova_multiuser.py).
+os.environ["ALLOW_SELF_SERVICE_SIGNUP"] = "true"
 
 # A throwaway Fernet key so Renova's NSS/credit-number encryption works in
 # tests without any real secret (see app/core/crypto.py). Generated fresh per

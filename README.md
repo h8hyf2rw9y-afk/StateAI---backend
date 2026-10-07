@@ -799,6 +799,27 @@ instead of whatever shape happened to bubble up (FastAPI's default `{"detail": .
 
 Never leaked to a client, under any of these paths: a stack trace, raw SQL, a filesystem path, or any exception detail beyond the short, safe message.
 
+## Backups & restore
+
+Every table this app owns (Postgres `public`) can be snapshotted into one gzip-compressed JSON file and, for Renova, selectively put back per advisor or per case. Logic in `app/backup/`, CLIs in `scripts/`.
+
+```powershell
+uv run python scripts/backup_db.py                          # snapshot now; keeps the newest 30
+uv run python scripts/backup_db.py --label antes-de-migracion
+uv run python scripts/backup_db.py --list
+
+uv run python scripts/restore_renova.py --advisor ana@gmail.com            # preview only
+uv run python scripts/restore_renova.py --advisor ana@gmail.com --apply    # re-create what's MISSING
+uv run python scripts/restore_renova.py --case <case-id> --apply --overwrite   # also revert changed rows
+```
+
+- **Where:** `STATEAI_BACKUP_DIR`, default `%USERPROFILE%\OneDrive\StateAI-respaldos` — OneDrive keeps an off-machine copy. Never inside the repo: a backup holds client names, phones and addresses.
+- **Consistent and read-only:** one `REPEATABLE READ, READ ONLY` transaction, so the snapshot is a single point in time and can't modify anything. Each file gets a `.sha256`; a damaged or edited file is refused on load.
+- **Restore is selective and conservative:** an advisor's cases are chosen with the same rule the app uses for what they see (assigned to them OR created by them) plus those cases' follow-up history. Without `--overwrite` it only re-inserts rows that no longer exist (same ids), so it can never undo newer legitimate edits. `--apply` first takes an `antes-de-restaurar` snapshot, runs in one transaction, and writes a `RENOVA_CASE_RESTORED_FROM_BACKUP` audit entry per case.
+- **Protected fields stay encrypted** (NSS, número de crédito, INE): a backup is only fully restorable with the same `RENOVA_ENCRYPTION_KEY`. Keep a copy of that key somewhere safe and separate from the backups.
+- **Rule:** run `backup_db.py --label …` before any migration, bulk data change or restore. A daily snapshot is scheduled with Windows Task Scheduler ("StateAI respaldo diario").
+- Supabase Auth (`auth.users`) is not copied — it isn't ours; an advisor simply signs in again with the same account.
+
 ## Security considerations
 
 - **JWT verification is the real security boundary here** — not the frontend's `proxy.ts` (documented there as optimistic-only). Every protected route depends on `get_current_org_user`, which cryptographically verifies the token against Supabase's own public keys.
