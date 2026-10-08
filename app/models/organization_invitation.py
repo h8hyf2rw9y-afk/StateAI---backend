@@ -13,7 +13,8 @@ class OrganizationInvitation(Base, UUIDPKMixin, TimestampMixin):
     EXISTING organization (as opposed to every other sign-up, which gets a
     brand-new one — see app/services/onboarding_service.py). There is no
     outbound email here: the org has no email-sending integration yet, so
-    the owner shares `/register?invite={token}` themselves (WhatsApp, etc.)
+    the owner shares the short one-time code or `/register?invite={token}`
+    themselves (WhatsApp, etc.)
     — the same reasoning Renova's own WhatsApp-sourced intake already
     leans on throughout this app.
 

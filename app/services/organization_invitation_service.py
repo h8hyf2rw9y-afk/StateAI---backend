@@ -24,6 +24,22 @@ from app.services.audit_service import AuditService
 
 _ENTITY_TYPE = "organization_invitation"
 _INVITATION_LIFETIME = timedelta(days=7)
+_INVITE_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
+def _new_invitation_code() -> str:
+    """A human-friendly ~50-bit one-time code, excluding ambiguous 0/O/1/I characters."""
+    compact = "".join(secrets.choice(_INVITE_CODE_ALPHABET) for _ in range(10))
+    return f"{compact[:5]}-{compact[5:]}"
+
+
+def _normalize_invitation_credential(value: str) -> str:
+    """Accept codes typed with lowercase, spaces or omitted hyphen; preserve legacy long URL tokens exactly."""
+    raw = value.strip()
+    compact = raw.replace("-", "").replace(" ", "").upper()
+    if len(compact) == 10 and all(character in _INVITE_CODE_ALPHABET for character in compact):
+        return f"{compact[:5]}-{compact[5:]}"
+    return raw
 
 
 def _is_expired(expires_at: datetime) -> bool:
@@ -57,7 +73,7 @@ class OrganizationInvitationService:
                 "Only the owner can invite administrators or general CRM agents.",
             )
 
-        token = secrets.token_urlsafe(32)
+        token = _new_invitation_code()
         expires_at = datetime.now(timezone.utc) + _INVITATION_LIFETIME
         invitation = self.repo.create(
             current_user.organization_id,
@@ -108,14 +124,14 @@ class OrganizationInvitationService:
         self.db.commit()
 
     def preview(self, token: str) -> OrganizationInvitationPreview:
-        invitation = self._valid_pending_invitation(token)
+        invitation = self._valid_pending_invitation(_normalize_invitation_credential(token))
         if invitation is None:
             return OrganizationInvitationPreview(valid=False)
         organization = self.db.get(Organization, invitation.organization_id)
         return OrganizationInvitationPreview(valid=True, organization_name=organization.name if organization else None)
 
     def accept(self, user_id: uuid.UUID, claims: dict, data: OrganizationInvitationAccept) -> User:
-        invitation = self.repo.get_by_token(data.token)
+        invitation = self.repo.get_by_token(_normalize_invitation_credential(data.token))
 
         existing = self.user_repo.get(user_id)
         if existing is not None:

@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     # organization of their own (POST /me/organization). Set it to false to
     # make the app invitation-only: such a session then stays unprovisioned
     # (403 on every CRM route) until an owner/admin invites that email.
-    allow_self_service_signup: bool = True
+    allow_self_service_signup: bool = False
 
     # Fernet key(s) protecting Renova's most sensitive owner fields (NSS and
     # credit number) at rest — see app/core/crypto.py. A urlsafe-base64

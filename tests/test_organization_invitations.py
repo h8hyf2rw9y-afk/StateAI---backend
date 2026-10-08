@@ -104,7 +104,8 @@ def test_owner_can_create_an_invitation(db_session: Session):
         assert body["email"] == "colega@example.com"
         assert body["role"] == "agent"
         assert body["status"] == "pending"
-        assert len(body["token"]) > 20
+        compact = body["token"].replace("-", "")
+        assert len(compact) == 10 and compact.isalnum() and body["token"][5] == "-"
     finally:
         app.dependency_overrides.clear()
 
@@ -264,7 +265,9 @@ def test_accepting_joins_the_inviters_organization(db_session: Session):
     new_user_id = uuid.uuid4()
     joiner = _unprovisioned_client(db_session, _claims(new_user_id, email="nueva@example.com"))
     try:
-        response = joiner.post(JOIN_URL, json={"token": invitation["token"]})
+        # Codes are forgiving when typed manually: case and separator do not matter.
+        typed_code = invitation["token"].replace("-", " ").lower()
+        response = joiner.post(JOIN_URL, json={"token": typed_code})
         assert response.status_code == 200
         body = response.json()
         assert body["organization_id"] == str(owner.organization_id)
