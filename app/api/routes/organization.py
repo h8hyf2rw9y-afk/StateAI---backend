@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -13,9 +13,11 @@ from app.schemas.organization_invitation import (
     OrganizationInvitationRead,
 )
 from app.schemas.organization_member import OrganizationMemberRead, OrganizationMemberUpdate
+from app.schemas.retify_dashboard import RetifyDashboardPeriod, RetifyDashboardResponse
 from app.schemas.user import CurrentUser, OrganizationRead
 from app.services.organization_invitation_service import OrganizationInvitationService
 from app.services.organization_member_service import OrganizationMemberService
+from app.services.retify_dashboard_service import RetifyDashboardService
 
 router = APIRouter(prefix="/organization", tags=["organization"])
 
@@ -83,6 +85,24 @@ def list_members(
     current_user: CurrentUser = Depends(get_current_org_user), db: Session = Depends(get_db)
 ) -> list[OrganizationMemberRead]:
     return OrganizationMemberService(db).list(current_user)
+
+
+@router.get(
+    "/retify-dashboard",
+    response_model=RetifyDashboardResponse,
+    dependencies=[Depends(require_role("owner", "admin"))],
+)
+def read_retify_dashboard(
+    period: RetifyDashboardPeriod = Query("30d"),
+    assigned_user_id: uuid.UUID | None = Query(None),
+    current_user: CurrentUser = Depends(get_current_org_user),
+    db: Session = Depends(get_db),
+) -> RetifyDashboardResponse:
+    return RetifyDashboardService(db).read(
+        current_user.organization_id,
+        period=period,
+        assigned_user_id=assigned_user_id,
+    )
 
 
 @router.patch(
