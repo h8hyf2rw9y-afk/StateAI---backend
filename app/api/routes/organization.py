@@ -32,12 +32,12 @@ def read_my_organization(
 
 
 # Bringing a specific person into this SAME organization (as opposed to
-# /me/organization, which always creates a brand-new one). Every write here
-# is owner/admin-only; `preview` is the one deliberately public exception —
-# the person clicking a /register?invite= link has no session yet.
+# /me/organization, which always creates a brand-new one). Only the owner can
+# create, list or revoke invitations. `preview` is the one deliberately public
+# exception — the person clicking a /register?invite= link has no session yet.
 @router.post(
     "/invitations", response_model=OrganizationInvitationCreated, status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_role("owner", "admin"))],
+    dependencies=[Depends(require_role("owner"))],
 )
 def create_invitation(
     data: OrganizationInvitationCreate,
@@ -49,7 +49,7 @@ def create_invitation(
 
 @router.get(
     "/invitations", response_model=list[OrganizationInvitationRead],
-    dependencies=[Depends(require_role("owner", "admin"))],
+    dependencies=[Depends(require_role("owner"))],
 )
 def list_invitations(
     current_user: CurrentUser = Depends(get_current_org_user), db: Session = Depends(get_db)
@@ -59,7 +59,7 @@ def list_invitations(
 
 @router.delete(
     "/invitations/{invitation_id}", status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_role("owner", "admin"))],
+    dependencies=[Depends(require_role("owner"))],
 )
 def revoke_invitation(
     invitation_id: uuid.UUID,
@@ -75,8 +75,8 @@ def preview_invitation(token: str, db: Session = Depends(get_db)) -> Organizatio
     return OrganizationInvitationService(db).preview(token)
 
 
-# The admin "Usuarios" tab: who is in this organization, and switching an
-# account off/on. Owner/admin only, like every invitation write above.
+# The admin "Usuarios" tab lets owner/admin inspect the team. Only the owner
+# may change a member's role or active state.
 @router.get(
     "/members", response_model=list[OrganizationMemberRead],
     dependencies=[Depends(require_role("owner", "admin"))],
@@ -107,7 +107,7 @@ def read_retify_dashboard(
 
 @router.patch(
     "/members/{member_id}", response_model=OrganizationMemberRead,
-    dependencies=[Depends(require_role("owner", "admin"))],
+    dependencies=[Depends(require_role("owner"))],
 )
 def update_member(
     member_id: uuid.UUID,

@@ -376,13 +376,13 @@ def test_only_owner_changes_roles_and_can_never_grant_owner(db_session, team, or
     ).status_code == 403
 
 
-def test_admin_can_invite_advisors_but_only_owner_can_invite_admins(db_session, team, organization_id):
+def test_only_owner_can_invite_people(db_session, team, organization_id):
     admin = _member(db_session, organization_id, "admin")
     client = _client_as(db_session, admin)
     advisor = client.post(
         "/api/v1/organization/invitations", json={"email": "asesor@example.com", "role": "renova_agent"}
     )
-    assert advisor.status_code == 201, advisor.text
+    assert advisor.status_code == 403
     assert client.post(
         "/api/v1/organization/invitations", json={"email": "admin2@example.com", "role": "admin"}
     ).status_code == 403
@@ -391,15 +391,16 @@ def test_admin_can_invite_advisors_but_only_owner_can_invite_admins(db_session, 
     ).status_code == 403
 
 
-def test_nobody_deactivates_themselves_or_the_owner(db_session, team, organization_id):
+def test_only_owner_deactivates_members_and_nobody_deactivates_the_owner(db_session, team, organization_id):
     owner_client = _client_as(db_session, team["owner"])
     assert owner_client.patch(f"/api/v1/organization/members/{team['owner'].id}", json={"is_active": False}).status_code == 409
 
     admin = _member(db_session, organization_id, "admin")
-    _act_as(admin)
-    assert owner_client.patch(f"/api/v1/organization/members/{team['owner'].id}", json={"is_active": False}).status_code == 403
-    other_admin = _member(db_session, organization_id, "admin")
-    assert owner_client.patch(f"/api/v1/organization/members/{other_admin.id}", json={"is_active": False}).status_code == 403
+    admin_client = _client_as(db_session, admin)
+    assert admin_client.patch(f"/api/v1/organization/members/{team['owner'].id}", json={"is_active": False}).status_code == 403
+    assert admin_client.patch(f"/api/v1/organization/members/{team['ana'].id}", json={"is_active": False}).status_code == 403
+
+    owner_client = _client_as(db_session, team["owner"])
     assert owner_client.patch(f"/api/v1/organization/members/{team['ana'].id}", json={"is_active": False}).status_code == 200
 
 

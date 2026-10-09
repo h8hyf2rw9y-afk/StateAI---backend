@@ -110,13 +110,13 @@ def test_owner_can_create_an_invitation(db_session: Session):
         app.dependency_overrides.clear()
 
 
-def test_admin_can_create_an_advisor_invitation(db_session: Session):
+def test_admin_cannot_create_an_advisor_invitation(db_session: Session):
     admin_client, _ = _org_client(db_session, role="admin")
     try:
         response = admin_client.post(
             INVITATIONS_URL, json={"email": "colega@example.com", "role": "renova_agent"}
         )
-        assert response.status_code == 201
+        assert response.status_code == 403
     finally:
         app.dependency_overrides.clear()
 
@@ -177,6 +177,19 @@ def test_revoking_a_pending_invitation(db_session: Session):
         assert response.status_code == 204
         rows = owner_client.get(INVITATIONS_URL).json()
         assert rows[0]["status"] == "revoked"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_admin_cannot_revoke_an_advisor_invitation(db_session: Session):
+    owner_client, _ = _org_client(db_session, role="owner")
+    invitation = _create_invitation(owner_client, role="renova_agent")
+    app.dependency_overrides.clear()
+
+    admin_client, _ = _org_client(db_session, role="admin")
+    try:
+        response = admin_client.delete(f"{INVITATIONS_URL}/{invitation['id']}")
+        assert response.status_code == 403
     finally:
         app.dependency_overrides.clear()
 

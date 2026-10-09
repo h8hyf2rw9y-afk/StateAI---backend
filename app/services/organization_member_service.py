@@ -24,10 +24,10 @@ _ENTITY_TYPE = "user"
 
 class OrganizationMemberService:
     """
-    The owner/admin view of who is in the organization (routes gate it with
-    require_role("owner", "admin")). Deactivating never deletes anything: the
-    `users` row and every case it owns stay, and get_current_org_user simply
-    refuses that account until it's reactivated.
+    The owner/admin view of who is in the organization. Only the owner may
+    mutate access. Deactivating never deletes anything: the `users` row and
+    every case it owns stay, and get_current_org_user simply refuses that
+    account until it's reactivated.
     """
 
     def __init__(self, db: Session) -> None:
@@ -51,6 +51,8 @@ class OrganizationMemberService:
     def update(
         self, current_user: CurrentUser, member_id: uuid.UUID, data: OrganizationMemberUpdate
     ) -> OrganizationMemberRead:
+        if current_user.role != "owner":
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the owner can change member access.")
         member = self.user_repo.get(member_id)
         if member is None or member.organization_id != current_user.organization_id:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Member not found.")
@@ -58,11 +60,7 @@ class OrganizationMemberService:
             raise HTTPException(status.HTTP_409_CONFLICT, "You can't change your own account.")
         if member.role == "owner":
             raise HTTPException(status.HTTP_403_FORBIDDEN, "The organization owner can't be changed.")
-        if member.role == "admin" and current_user.role != "owner":
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the owner can change another admin's access.")
         if data.role is not None:
-            if current_user.role != "owner":
-                raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the owner can change member roles.")
             if data.role == "owner":
                 raise HTTPException(status.HTTP_403_FORBIDDEN, "The owner role can't be granted to another account.")
 

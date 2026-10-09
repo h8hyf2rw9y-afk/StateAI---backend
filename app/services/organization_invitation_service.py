@@ -53,9 +53,9 @@ class OrganizationInvitationService:
     """
     Brings a specific person into an EXISTING organization — the self-
     service "create my own" path (OnboardingService) is for everyone else.
-    Route-level `require_role("owner", "admin")` gates every write here
-    except `accept` (anyone with a verified, unprovisioned session can
-    accept — that's the whole point) and `preview` (public, token-only).
+    Only the owner may create, list or revoke invitations. `accept` is
+    available to a verified, unprovisioned session and `preview` is public
+    and token-only.
     """
 
     def __init__(self, db: Session) -> None:
@@ -65,14 +65,10 @@ class OrganizationInvitationService:
         self.audit = AuditService(db)
 
     def create(self, current_user: CurrentUser, data: OrganizationInvitationCreate) -> OrganizationInvitationCreated:
+        if current_user.role != "owner":
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the owner can create invitations.")
         if data.role not in INVITABLE_ROLES:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Invitations can only grant the admin, agent or renova_agent role.")
-        if current_user.role != "owner" and data.role != "renova_agent":
-            raise HTTPException(
-                status.HTTP_403_FORBIDDEN,
-                "Only the owner can invite administrators or general CRM agents.",
-            )
-
         token = _new_invitation_code()
         expires_at = datetime.now(timezone.utc) + _INVITATION_LIFETIME
         invitation = self.repo.create(
@@ -98,17 +94,17 @@ class OrganizationInvitationService:
         return OrganizationInvitationCreated.model_validate(invitation)
 
     def list(self, current_user: CurrentUser) -> list[OrganizationInvitationRead]:
-        invitations = self.repo.list_for_organization(current_user.organization_id)
         if current_user.role != "owner":
-            invitations = [invitation for invitation in invitations if invitation.role == "renova_agent"]
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the owner can list invitations.")
+        invitations = self.repo.list_for_organization(current_user.organization_id)
         return [OrganizationInvitationRead.model_validate(i) for i in invitations]
 
     def revoke(self, current_user: CurrentUser, invitation_id: uuid.UUID) -> None:
+        if current_user.role != "owner":
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the owner can revoke invitations.")
         invitation = self.repo.get_for_organization(current_user.organization_id, invitation_id)
         if invitation is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Invitation not found.")
-        if current_user.role != "owner" and invitation.role != "renova_agent":
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the owner can revoke this invitation.")
         if invitation.status != "pending":
             raise HTTPException(status.HTTP_409_CONFLICT, "Only a pending invitation can be revoked.")
 
